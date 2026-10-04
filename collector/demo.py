@@ -117,13 +117,17 @@ def gen_channel(slug, name, seed, created_days, scale):
             "minutes": {"fact": rnd.randint(55, 95)},
             "claude": {"fact": {"output": rnd.randint(150000, 260000), "input": 9000, "cache_write": 1200000, "cache_read": 40000000, "turns": 300},
                        "steps": {"make": {"output": 200000, "input": 8000, "cache_write": 1000000, "cache_read": 35000000}, "publish": {"output": 15000, "input": 500, "cache_write": 100000, "cache_read": 3000000}}},
-            "claude_plan": {"output": 210000}}
+            "claude_plan": {"output": 210000}, "topic_at": (dt.datetime.fromisoformat(videos[it["youtube_id"]]["published_at"].replace("Z", "+00:00")) - dt.timedelta(days=rnd.uniform(1.5, 4))).isoformat(),
+            "review": {"rounds": rnd.choice([1, 1, 2]), "edits": rnd.choice([0, 0, 1]), "first_sent": None, "approved_at": None, "waiting": False}}
         bal -= fact
         costs["hf_balance"].append([videos[it["youtube_id"]]["published_at"], round(bal, 2)])
         costs["claude_runs"].append({"slug": it["id"], "step": "make", "t": videos[it["youtube_id"]]["published_at"], "output": 200000})
+    ready = [x for x in cal_items if x["format"] == "long" and x["status"] == "ready"][:1]
+    for x in ready:
+        costs["videos"][x["id"]] = {"review": {"rounds": 2, "edits": 1, "last_sent": (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=5)).isoformat(), "waiting": True}}
     costs["claude_limits"].append({"t": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "five_hour": 40.0, "weekly": 63.0})
     return {
-        "v": 1, "slug": slug, "name": name, "channel_id": "DEMO" + slug, "demo": True, "costs": costs,
+        "v": 1, "slug": slug, "name": name, "channel_id": "DEMO" + slug, "demo": True, "costs": costs, "telegram_bot": "example_bot",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "channel": {"id": "DEMO" + slug, "title": name, "published_at": f"{created}T00:00:00Z", "subscribers": subs,
                     "views": sum(r[1] for r in daily["all"]["rows"]), "video_count": len(videos)},

@@ -116,9 +116,11 @@ class Channel:
         out["audience"] = self.audience() if heavy or "audience" not in self.prev else self.prev["audience"]
         out["ypp"] = self.ypp(out["channel"]["subscribers"], videos)
         out["reach_state"] = self.reach(videos)
-        self.costs = None
+        self.costs = self.pstate = None
         out["calendar"] = self.safe("calendar", self.calendar, self.prev.get("calendar"))
         out["costs"] = self.costs or self.prev.get("costs")
+        out["pipeline_state"] = self.pstate or self.prev.get("pipeline_state")
+        out["telegram_bot"] = (self.cfg.get("calendar") or {}).get("telegram_bot")
         out["errors"] = self.errors
         return out
 
@@ -305,6 +307,9 @@ class Channel:
                     costs = dst / cal.get("costs_path", "costs.json")  # production costs (pipeline tools/costs.py)
                     if costs.exists():
                         self.costs = json.loads(costs.read_text()) | {"source": f"{cal['repo']}@{branch}"}
+                    state = dst / "state.json"  # cloud pipeline state (what waits for approval right now)
+                    if state.exists():
+                        self.pstate = json.loads(state.read_text())
                     return data
         raise RuntimeError(f"calendar.json not found in {cal['repo']} {cal.get('branches')}")
 

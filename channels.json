@@ -11,7 +11,8 @@
           "main"
         ],
         "path": "calendar.json",
-        "deploy_key_env": "DEPLOY_KEY_CHALKONAUT"
+        "deploy_key_env": "DEPLOY_KEY_CHALKONAUT",
+        "telegram_bot": "you_sho_reddit_bot"
       }
     }
   ],

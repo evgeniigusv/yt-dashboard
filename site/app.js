@@ -285,6 +285,9 @@ function alerts(ch) {
     out.push(["warning", "Shorts пролистывают", `«${esc(x.v.title)}»: engaged только ${pct(x.m.stay, 0)} просмотров (порог ~70%). Усилить первую секунду.`, x.id]);
   for (const o of outliers(ch).slice(0, 5))
     out.push(["good", `Выброс ×${o.ratio.toFixed(1)} — делать продолжение`, `«${esc(o.v.title)}»: ${fmt(o.v.format === "short" ? o.m.d2 ?? o.m.d7 : o.m.d7 ?? o.m.d2)} просмотров за ${o.win} — в ${o.ratio.toFixed(1)} раза выше медианы канала.`, o.id]);
+  out.push(...decayAlerts(ch));
+  for (const w of waitingOk(ch)) if (w.sent && Date.now() - new Date(w.sent) > 24 * 36e5)
+    out.push(["warning", "Превью ждёт «Ок» больше суток", `«${esc(w.title)}» — ответь в Telegram, иначе слот публикации сдвинется.`]);
   const t = totals(ch, "all", range(ch, 28));
   if (t.subscribersGained >= 20 && t.subscribersLost / t.subscribersGained > 0.3)
     out.push(["warning", "Высокий отток подписчиков", `За 28 дней отписались ${fmt(t.subscribersLost)} на ${fmt(t.subscribersGained)} новых (${pct(t.subscribersLost / t.subscribersGained * 100, 0)}; норма 10–20%).`]);
@@ -382,13 +385,15 @@ function renderOverview(m, ch) {
   const engShare = t.views && t.engagedViews != null ? t.engagedViews / t.views * 100 : null;
   const noA = !daily(ch).some(r => r.views);
   m.innerHTML = `${noA ? `<div class="alert info" style="margin-bottom:12px"><span class="ic">i</span><div><b>YouTube Analytics ещё не отдал цифры по роликам</b><div class="small ink2">Статистика приходит с задержкой 2–3 дня, а у нового канала — до 3–4 дней. Пока работают счётчики просмотров во вкладке «Ролики» и календарь. Показы и CTR появятся примерно через 2 дня после первого сбора.</div></div></div>` : ""}
-  <section><div class="tiles">
+  <section><h2>Конверсии · ${N} д</h2><div class="tiles">${convTiles(ch, cur, prev)}</div>
+    <div class="note">Конверсии считаются на engaged-просмотры (так их считает YouTube после 24.08.2026). Подробные шаги — в воронках ниже, по каждому ролику — во вкладке «Ролики». Наведите на плитку — источник нормы.</div></section>
+  <section><h2>Канал · ${N} д</h2><div class="tiles">
     ${kpiTile("Подписчики", fmt(ch.channel?.subscribers), `<span class="${net >= 0 ? "up" : "down"}">${net >= 0 ? "+" : ""}${fmt(net)}</span> <span class="muted">за ${N} д (+${fmt(t.subscribersGained)} / −${fmt(t.subscribersLost)})</span>`)}
+    ${(() => { const sp = subsSplit(ch, cur), all = sp.long + sp.short; return kpiTile("Подписки: ролики / Shorts", `${fmt(sp.long)} / ${fmt(sp.short)}`, all ? `${pct(sp.short / all * 100, 0)} — из Shorts (такие подписчики реже смотрят длинные ролики)` : "нет новых подписок за период"); })()}
     ${kpiTile("Просмотры", fmt(t.views), delta(t.views, p.views), "С 24.08.2026 YouTube считает просмотр с первого кадра")}
     ${kpiTile("Engaged-просмотры", fmt(t.engagedViews), engShare != null ? `${pct(engShare, 0)} от всех · ${delta(t.engagedViews, p.engagedViews).replace(" к прошлому периоду", "")}` : "—", "По ним YouTube считает удержание, CTR и доход")}
     ${kpiTile("Часы просмотра", fmt(hours(t.estimatedMinutesWatched)), delta(t.estimatedMinutesWatched, p.estimatedMinutesWatched))}
     ${kpiTile("Показы превью", fmt(r?.impr), r ? delta(r.impr, rp?.impr) : `<span class="muted">Reporting API: первые данные через ~2 дня</span>`)}
-    ${kpiTile("CTR превью", pct(r?.ctr), r ? delta(r.ctr, rp?.ctr) : "—")}
     ${kpiTile("Ср. время просмотра (ролики)", dur(longAvd), tl.views ? `на ${fmt(tl.views)} просмотрах роликов` : "—")}
     ${kpiTile("Доход", rv?.rev != null ? money(rv.rev) : "—", rv?.rev != null ? `RPM ${money(rpm)} · ${delta(rv.rev, rvp?.rev).replace(" к прошлому периоду", "")}` : `<span class="muted">до монетизации — см. вкладку «Монетизация»</span>`)}
   </div></section>
@@ -402,7 +407,7 @@ function renderOverview(m, ch) {
   </section>
   <section class="grid g2">
     <div class="card"><h2>Что требует внимания</h2>${alertsHtml(alerts(ch), ch.slug)}</div>
-    <div class="card"><h2>Ближайшие выходы</h2>${agendaHtml(calendarItems(ch).filter(it => new Date(it.dateOnly ? it.date + "T23:59:00" : it.date) >= new Date()).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8), rubricColors(ch), ch)}
+    <div class="card"><h2>Ждут твоего «Ок»</h2>${waitingHtml(waitingOk(ch))}<h2 style="margin-top:16px">Ближайшие выходы</h2>${agendaHtml(calendarItems(ch).filter(it => new Date(it.dateOnly ? it.date + "T23:59:00" : it.date) >= new Date()).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8), rubricColors(ch), ch)}
       <div class="note">Полный план — вкладка «Календарь».</div></div>
   </section>
   <section class="card"><h2>Путь к монетизации</h2>${yppCompact(ch)}</section>`;
@@ -415,6 +420,43 @@ function renderOverview(m, ch) {
     { label: "Shorts", data: Sh.map(r => r?.views ?? 0), color: css("--s2") }]);
   barChart($("#cSubs"), days.map(shortLabel), [{ label: "Подписчики", data: A.map(r => (r?.subscribersGained ?? 0) - (r?.subscribersLost ?? 0)),
     colors: A.map(r => ((r?.subscribersGained ?? 0) - (r?.subscribersLost ?? 0)) < 0 ? css("--s8") : css("--s1")) }]);
+}
+function convValues(ch, rg) {
+  const r = reachTotals(ch, rg, "long"), L = totals(ch, "VIDEO_ON_DEMAND", rg), Sh = totals(ch, "SHORTS", rg);
+  const rate = (a, b) => (a != null && b ? a / b * 100 : null);
+  return { ctr: r?.ctr ?? null, impr: r?.impr || 0, stay: rate(Sh.engagedViews, Sh.views), shViews: Sh.views || 0,
+    subL: rate(L.subscribersGained, L.engagedViews), engL: L.engagedViews || 0, subS: rate(Sh.subscribersGained, Sh.engagedViews), engS: Sh.engagedViews || 0,
+    likeL: rate(L.likes, L.engagedViews), likeS: rate(Sh.likes, Sh.engagedViews) };
+}
+function convCompareHtml(chans, N) {
+  const rows = chans.map(c => ({ c, v: convValues(c, range(c, N)) }));
+  const cols = [
+    ["Показ → просмотр (CTR)", x => x.ctr, x => (x.impr >= 1000 ? level(NORMS.long.ctr.t, x.ctr) : "na"), 1],
+    ["Shorts: смотрят, не листают", x => x.stay, x => (x.shViews >= 300 ? level(NORMS.short.stay.t, x.stay) : "na"), 0],
+    ["Просмотр → подписка, ролики", x => x.subL, x => (x.engL >= 300 ? level(NORMS.long.sub.t, x.subL) : "na"), 2],
+    ["Просмотр → подписка, Shorts", x => x.subS, x => (x.engS >= 300 ? level(NORMS.short.sub.t, x.subS) : "na"), 2],
+    ["Лайк / просмотр, ролики", x => x.likeL, x => (x.engL >= 300 ? level(NORMS.long.like.t, x.likeL) : "na"), 1],
+    ["Лайк / просмотр, Shorts", x => x.likeS, x => (x.engS >= 300 ? level(NORMS.short.like.t, x.likeS) : "na"), 1],
+  ];
+  return `<div class="tablewrap"><table><thead><tr><th>Канал</th>${cols.map(c => `<th class="n">${c[0]}</th>`).join("")}</tr></thead><tbody>
+    ${rows.map(r => `<tr data-open="${esc(r.c.slug)}"><td>${esc(r.c.channel?.title || r.c.name)}</td>${cols.map(c => `<td class="n">${lvlCell(pct(c[1](r.v), c[3]), c[2](r.v))}</td>`).join("")}</tr>`).join("")}
+    ${rows.length > 1 ? `<tr><td class="muted">Медиана каналов</td>${cols.map(c => `<td class="n muted">${pct(median(rows.map(r => c[1](r.v))), c[3])}</td>`).join("")}</tr>` : ""}
+  </tbody></table></div><div class="note">Все конверсии — на engaged-просмотры. Цветная точка — уровень относительно норм (наведите). «Мало данных» — меньше 1000 показов или 300 просмотров за период. Сравнивайте каналы между собой, а не с абсолютами: ниши дают разные нормы.</div>`;
+}
+function convTiles(ch, cur, prev) {
+  const r = reachTotals(ch, cur, "long"), rp = reachTotals(ch, prev, "long");
+  const L = totals(ch, "VIDEO_ON_DEMAND", cur), Lp = totals(ch, "VIDEO_ON_DEMAND", prev);
+  const Sh = totals(ch, "SHORTS", cur), Shp = totals(ch, "SHORTS", prev);
+  const rate = (a, b) => (a != null && b ? a / b * 100 : null);
+  const tile = (k, v, l, d, src) => `<div class="tile" title="${esc(src)}"><div class="k">${k}</div><div class="v num" style="display:flex;gap:4px 8px;align-items:center;flex-wrap:wrap;white-space:normal">${v}${badge(l)}</div><div class="d">${d}</div></div>`;
+  const ctr = r?.ctr, sl = rate(L.subscribersGained, L.engagedViews), ss = rate(Sh.subscribersGained, Sh.engagedViews), stay = rate(Sh.engagedViews, Sh.views);
+  const dl = (c, p) => (c != null && p != null ? delta(c, p).replace(" к прошлому периоду", "") : "");
+  return [
+    tile("Показ → просмотр (CTR, ролики)", pct(ctr), r && r.impr >= 1000 ? level(NORMS.long.ctr.t, ctr) : "na", r ? `${fmt(r.impr)} показов → ${fmt(r.clicks)} просмотров ${dl(ctr, rp?.ctr)}` : "показы приходят с задержкой ~2 дня", NORMS.long.ctr.src + " · норма 3–6%"),
+    tile("Лента Shorts → смотрят", pct(stay, 0), Sh.views >= 300 ? level(NORMS.short.stay.t, stay) : "na", Sh.views ? `${fmt(Sh.engagedViews)} из ${fmt(Sh.views)} не пролистали ${dl(stay, rate(Shp.engagedViews, Shp.views))}` : "нет просмотров Shorts", NORMS.short.stay.src + " · норма 65–75%"),
+    tile("Просмотр → подписка (ролики)", pct(sl, 2), L.engagedViews >= 300 ? level(NORMS.long.sub.t, sl) : "na", L.engagedViews ? `+${fmt(L.subscribersGained)} на ${fmt(L.engagedViews)} engaged ${dl(sl, rate(Lp.subscribersGained, Lp.engagedViews))}` : "нет просмотров роликов", NORMS.long.sub.src + " · норма 0,2–1%"),
+    tile("Просмотр → подписка (Shorts)", pct(ss, 2), Sh.engagedViews >= 300 ? level(NORMS.short.sub.t, ss) : "na", Sh.engagedViews ? `+${fmt(Sh.subscribersGained)} на ${fmt(Sh.engagedViews)} engaged ${dl(ss, rate(Shp.subscribersGained, Shp.engagedViews))}` : "нет просмотров Shorts", NORMS.short.sub.src + " · норма 0,1–0,5%"),
+  ].join("");
 }
 function fstep(label, sub, val, lvl, title = "") {
   return `<div class="fstep" title="${esc(title)}"><div class="lbl"><b>${label}</b><span>${sub}</span></div><div class="val">${val}</div><div>${badge(lvl)}</div></div>`;
@@ -607,6 +649,7 @@ function openVideo(slug, id) {
       ${cell("like", "Лайки / engaged", pct(x.like, 2), level((short ? NORMS.short : NORMS.long).like.t, x.like))}
       ${cell("comment", short ? "Комм.+репосты / engaged" : "Комментарии / engaged", pct(x.comment, 2), level((short ? NORMS.short : NORMS.long).comment.t, x.comment))}
       ${cell("sub", "Подписки / engaged", pct(x.sub, 2), level((short ? NORMS.short : NORMS.long).sub.t, x.sub))}
+      ${(() => { const d = short ? null : ctrDecay(v); return d ? `<div><div class="k">CTR: 48 ч → дни 3–7</div><div class="v">${pct(d.early)} → ${pct(d.late)}</div><span class="muted small">×${d.ratio.toFixed(2)}${d.ratio < 0.6 ? " — превью выгорает" : ""}</span></div>` : ""; })()}
       ${cell("d2", "Просмотры за 48 ч", fmt(x.d2))}
       ${cell("d7", "За 7 дней", fmt(x.d7))}
       ${cell("d28", "За 28 дней", fmt(x.d28))}
@@ -748,6 +791,58 @@ function renderAudience(m, ch) {
   </section>`;
 }
 
+// ---------------------------------------------------------------- subscribers by format, CTR decay, review loop
+function subsSplit(ch, rg) {
+  const L = totals(ch, "VIDEO_ON_DEMAND", rg), Sh = totals(ch, "SHORTS", rg);
+  return { long: L.subscribersGained || 0, short: Sh.subscribersGained || 0 };
+}
+function ctrDecay(v) {  // CTR of the first 48 h vs days 3–7: how fast the thumbnail "burns out" on colder audiences
+  const pub = (v.published_at || "").slice(0, 10);
+  if (!v.reach || !pub) return null;
+  const win = (a, b) => { let i = 0, c = 0; for (const [d, [x, y]] of Object.entries(v.reach)) if (d >= addDays(pub, a) && d <= addDays(pub, b)) { i += x; c += y; } return { i, c }; };
+  const e = win(0, 1), l = win(2, 6);
+  if (e.i < 200 || l.i < 200) return null;
+  return { early: e.c / e.i * 100, late: l.c / l.i * 100, ratio: (l.c / l.i) / (e.c / e.i || 1) };
+}
+function decayAlerts(ch) {
+  const longs = publicVideos(ch, "long").map(x => ({ ...x, d: ctrDecay(x.v) })).filter(x => x.d);
+  const med = longs.length >= 3 ? median(longs.map(x => x.d.ratio)) : null;
+  return longs.filter(x => x.m.age <= 21 && (med ? x.d.ratio < med * 0.8 : x.d.ratio < 0.6)).map(x =>
+    ["warning", "Пора менять превью", `«${esc(x.v.title)}»: CTR упал с ${pct(x.d.early)} (48 ч) до ${pct(x.d.late)} (дни 3–7) — ${med ? `быстрее медианы канала (×${x.d.ratio.toFixed(2)} против ×${med.toFixed(2)})` : "больше чем на 40%"}. Попробовать другое превью или заголовок.`, x.id]);
+}
+function waitingOk(ch) {  // previews sent to Telegram that still wait for "Ок"
+  const out = [];
+  const cal = Object.fromEntries((ch.calendar?.items || []).map(i => [i.id, i]));
+  for (const [slug, c] of Object.entries(ch.costs?.videos || {})) if (c.review?.waiting)
+    out.push({ slug, title: cal[slug]?.title || slug, sent: c.review.last_sent, round: c.review.rounds, edits: c.review.edits });
+  const st = ch.pipeline_state;
+  if (st?.status === "waiting" && st.slug && !out.some(o => o.slug === st.slug))
+    out.push({ slug: st.slug, title: cal[st.slug]?.title || st.slug, sent: st.sent_at ? new Date(st.sent_at * 1000).toISOString() : null, round: null });
+  return out.map(o => ({ ...o, ch, bot: ch.telegram_bot }));
+}
+function waitingHtml(list) {
+  if (!list.length) return `<div class="empty">Ничего не ждёт — все превью разобраны</div>`;
+  return `<div class="agenda">${list.map(o => {
+    const h = o.sent ? (Date.now() - new Date(o.sent)) / 36e5 : null;
+    return `<div class="arow" style="--rc:var(--warning)" ${o.bot ? `data-url="https://t.me/${esc(o.bot)}"` : ""}>
+      <span class="when">${h != null ? (h < 48 ? `${Math.round(h)} ч назад` : `${Math.round(h / 24)} дн. назад`) : "—"}</span>
+      <span class="what">${esc(o.title)}${S.view === "__all" ? ` <span class="muted small">· ${esc(o.ch.channel?.title || o.ch.slug)}</span>` : ""}${o.round ? ` <span class="muted small">· круг ${o.round}${o.edits ? `, правок ${o.edits}` : ""}</span>` : ""}</span>
+      <span class="st st-ready">${o.bot ? "открыть в Telegram ↗" : "ждёт «Ок»"}</span></div>`;
+  }).join("")}</div><div class="note">Ссылка открывает чат с ботом — превью там последним сообщением с видео. На отдельное сообщение в личном чате Telegram ссылку дать нельзя.</div>`;
+}
+function leadStats(ch) {  // topic chosen -> published, review rounds
+  const rows = [];
+  for (const [slug, c] of Object.entries(ch.costs?.videos || {})) {
+    if (c.trial) continue;
+    const v = c.youtube_id && ch.videos?.[c.youtube_id];
+    const pubAt = v?.privacy === "public" ? v.published_at : null;
+    rows.push({ slug, lead: c.topic_at && pubAt ? (new Date(pubAt) - new Date(c.topic_at)) / 864e5 : null,
+      approve: c.review?.first_sent && c.review?.approved_at ? (new Date(c.review.approved_at) - new Date(c.review.first_sent)) / 36e5 : null,
+      rounds: c.review?.rounds ?? null, edits: c.review?.edits ?? null });
+  }
+  return rows;
+}
+
 // ---------------------------------------------------------------- production costs (pipeline tools/costs.py -> costs.json)
 const ECON = () => S.index?.economics || {};
 const STEP_RU = { research: "Исследование", script: "Сценарий", voice: "Озвучка", timeline: "Тайминг", images: "Картинки", music: "Музыка",
@@ -815,7 +910,7 @@ function renderCosts(m, ch) {
     ${kpiTile("Claude: токены вывода", tok(outTok), lim ? `лимит недели ${pct(lim.weekly, 0)} · 5 ч ${pct(lim.five_hour, 0)} (${fmtDate(lim.t)})` : "лимиты снимаются из приложения")}
   </section>
   <section class="card"><h2>План и факт по роликам</h2>
-    <div class="tablewrap"><table><thead><tr>${ch ? "" : "<th>Канал</th>"}<th>Ролик</th><th>Статус</th><th class="n">План, кр.</th><th class="n">Факт, кр.</th><th class="n">Δ</th><th class="n">Кр./мин видео</th><th class="n">Работа, мин</th><th class="n">Claude, вывод (план / факт)</th><th class="n">Просмотры (ролик+Shorts)</th><th class="n">Кр. на 1000 просм.</th></tr></thead>
+    <div class="tablewrap"><table><thead><tr>${ch ? "" : "<th>Канал</th>"}<th>Ролик</th><th>Статус</th><th class="n">План, кр.</th><th class="n">Факт, кр.</th><th class="n">Δ</th><th class="n">Кр./мин видео</th><th class="n">Работа, мин</th><th class="n">Claude, вывод (план / факт)</th><th class="n">Просмотры (ролик+Shorts)</th><th class="n">Кр. на 1000 просм.</th><th class="n">Тема → выход, дн.</th><th class="n">Круги / правки</th></tr></thead>
     <tbody>${rows.map(r => {
       const d = r.hfPlan && r.hf ? (r.hf - r.hfPlan) / r.hfPlan * 100 : null;
       return `<tr ${r.c.youtube_id ? `data-video="${esc(r.c.youtube_id)}" data-ch="${esc(r.ch.slug)}"` : ""}>${ch ? "" : `<td>${esc(r.ch.channel?.title || r.ch.name)}</td>`}
@@ -823,7 +918,8 @@ function renderCosts(m, ch) {
       <td class="n">${r.hfPlan != null ? fmt(r.hfPlan, 1) : "—"}</td><td class="n">${r.hf != null ? fmt(r.hf, 1) : "—"}${r.c.hf?.source?.startsWith("manual") ? " ≈" : ""}</td>
       <td class="n">${d != null ? `<span class="${d > 10 ? "down" : d < -10 ? "up" : "muted"}">${d > 0 ? "+" : ""}${pct(d, 0)}</span>` : "—"}</td>
       <td class="n">${r.perMin ? fmt(r.perMin, 1) : "—"}</td><td class="n">${r.c.minutes?.fact ?? "—"}</td>
-      <td class="n">${tok(r.outPlan)} / ${tok(r.out)}</td><td class="n">${r.views != null ? fmt(r.views) : "—"}</td><td class="n">${r.per1k ? fmt(r.per1k, 1) : "—"}</td></tr>`;
+      <td class="n">${tok(r.outPlan)} / ${tok(r.out)}</td><td class="n">${r.views != null ? fmt(r.views) : "—"}</td><td class="n">${r.per1k ? fmt(r.per1k, 1) : "—"}</td>
+      ${(() => { const L = leadStats(r.ch).find(x => x.slug === r.slug) || {}; return `<td class="n">${L.lead != null ? fmt(L.lead, 1) : "—"}</td><td class="n">${L.rounds != null ? `${L.rounds} / ${L.edits}` : "—"}</td>`; })()}</tr>`;
     }).join("")}</tbody></table></div>
     <div class="note">План — по истории канала (кредитов на минуту видео × плановая длина; токены — медиана прошлых роликов). Факт Higgsfield — разница баланса на каждом шаге (journal.py), «≈» — оценка для роликов до появления журнала. Токены Claude — из расшифровки сессий конвейера (ввод и кэш — во всплывающей подсказке на вкладке ниже).</div>
   </section>
@@ -906,7 +1002,9 @@ function renderSummary(m) {
   <section class="grid g2">
     <div class="card"><h2>Производство сейчас</h2><div class="hbars">${[["in_production", st("in_production")], ["ready", st("ready")], ["scheduled", st("scheduled")], ["failed", st("failed")], ["planned", st("planned")]].map(([k, n]) =>
       `<div class="hbar"><span class="t"><span class="st st-${k}">${STATUS[k]}</span></span><span class="x" style="text-align:left">${n}</span><span></span></div>`).join("")}</div>
-      <div class="note">«Готово, ждёт ОК» — ролики, которые ждут твоего «Ок» в Telegram. «Ошибка выгрузки» — смотреть publish_log.md.</div></div>
+      ${(() => { const L = chans.flatMap(leadStats); const ml = median(L.map(x => x.lead)), ma = median(L.map(x => x.approve)), mr = median(L.map(x => x.rounds));
+        return `<div class="small ink2" style="margin-top:10px">От темы до выхода: <b>${ml != null ? fmt(ml, 1) + " дн." : "—"}</b> (медиана) · проверка до «Ок»: <b>${ma != null ? fmt(ma, 1) + " ч" : "—"}</b> · кругов проверки: <b>${mr != null ? fmt(mr, 1) : "—"}</b></div>`; })()}
+      <h2 style="margin-top:16px">Ждут твоего «Ок»</h2>${waitingHtml(chans.flatMap(waitingOk))}</div>
     <div class="card"><h2>Экономика каналов</h2><div class="tablewrap"><table><thead><tr><th>Канал</th><th class="n">Роликов</th><th class="n">Кредитов всего</th><th class="n">На ролик</th><th class="n">На 1000 просм.</th><th class="n">Claude, вывод</th><th class="n">Доход всего</th></tr></thead><tbody>${chans.map(c => {
       const cr = costRows(c), t = cr.reduce((s, r) => s + (r.hf || 0), 0), vw = cr.reduce((s, r) => s + (r.views || 0), 0);
       const rv = objs(c.daily?.revenue).reduce((a, r) => a + (r.estimatedRevenue || 0), 0);
@@ -916,18 +1014,22 @@ function renderSummary(m) {
   </section>
   <section><h2>Аудитория · ${N} дней</h2><div class="tiles">
     ${kpiTile("Подписчики, всего", fmt(chans.reduce((s, c) => s + (c.channel?.subscribers || 0), 0)), `<span class="up">+${fmt(T("subscribersGained") - T("subscribersLost"))}</span> <span class="muted">за ${N} д</span>`)}
+    ${(() => { const sp = chans.reduce((a, c) => { const x = subsSplit(c, range(c, N)); return { long: a.long + x.long, short: a.short + x.short }; }, { long: 0, short: 0 }), all = sp.long + sp.short;
+      return kpiTile("Подписки: ролики / Shorts", `${fmt(sp.long)} / ${fmt(sp.short)}`, all ? `${pct(sp.short / all * 100, 0)} — из Shorts` : "нет новых подписок"); })()}
     ${kpiTile("Просмотры", fmt(T("views")), delta(T("views"), P("views")))}
     ${kpiTile("Engaged-просмотры", fmt(T("engagedViews")), delta(T("engagedViews"), P("engagedViews")))}
     ${kpiTile("Часы просмотра", fmt(T("estimatedMinutesWatched") / 60), delta(T("estimatedMinutesWatched"), P("estimatedMinutesWatched")))}
     ${kpiTile("Доход", rev ? money(rev) : "—", rev ? "сумма по каналам" : "пока ни один канал не монетизирован")}
     ${kpiTile("Вышло за период", `${rows.reduce((s, r) => s + r.longs, 0)} + ${rows.reduce((s, r) => s + r.shorts, 0)}`, "роликов + Shorts")}
   </div></section>
+  <section><h2>Конверсии по каналам · ${N} дней</h2>${convCompareHtml(chans, N)}</section>
   <section><h2>Каналы · ${N} дней</h2><div class="tablewrap"><table><thead><tr>
-    <th>Канал</th><th class="n">Подписчики</th><th class="n">Прирост</th><th class="n">Просмотры</th><th class="n">Δ</th><th class="n">Часы</th><th class="n">CTR</th><th class="n">0:30 (мед.)</th><th class="n">% просм. (мед.)</th><th class="n">Вышло</th><th class="n">Доход</th><th class="n">До YPP</th></tr></thead>
+    <th>Канал</th><th class="n">Подписчики</th><th class="n">Прирост</th><th class="n">Подп. ролики / Shorts</th><th class="n">Просмотры</th><th class="n">Δ</th><th class="n">Часы</th><th class="n">CTR</th><th class="n">Просм.→подп.</th><th class="n">0:30 (мед.)</th><th class="n">% просм. (мед.)</th><th class="n">Вышло</th><th class="n">Доход</th><th class="n">До YPP</th></tr></thead>
     <tbody>${rows.map(r => `<tr data-open="${esc(r.ch.slug)}"><td>${esc(r.ch.channel?.title || r.ch.name)}${r.ch.errors?.length ? ' <span class="badge b-na">предупр.</span>' : ""}</td>
-      <td class="n">${fmt(r.ch.channel?.subscribers)}</td><td class="n ${r.net >= 0 ? "up" : "down"}">${r.net >= 0 ? "+" : ""}${fmt(r.net)}</td>
+      <td class="n">${fmt(r.ch.channel?.subscribers)}</td><td class="n ${r.net >= 0 ? "up" : "down"}">${r.net >= 0 ? "+" : ""}${fmt(r.net)}</td><td class="n">${(() => { const x = subsSplit(r.ch, range(r.ch, N)); return `${fmt(x.long)} / ${fmt(x.short)}`; })()}</td>
       <td class="n">${fmt(r.t.views)}</td><td class="n">${r.p.views ? `<span class="${r.t.views >= r.p.views ? "up" : "down"}">${pct((r.t.views - r.p.views) / r.p.views * 100, 0)}</span>` : "—"}</td>
       <td class="n">${fmt(hours(r.t.estimatedMinutesWatched))}</td><td class="n">${lvlCell(pct(r.r?.ctr), r.r && r.r.impr >= 1000 ? level(NORMS.long.ctr.t, r.r.ctr) : "na")}</td>
+      <td class="n">${pct(r.t.engagedViews ? (r.t.subscribersGained || 0) / r.t.engagedViews * 100 : null, 2)}</td>
       <td class="n">${lvlCell(pct(r.ret, 0), level(NORMS.long.ret30.t, r.ret))}</td><td class="n">${lvlCell(pct(r.apv, 0), level(NORMS.long.apv.t, r.apv))}</td>
       <td class="n">${r.longs} + ${r.shorts}</td><td class="n">${r.rv?.rev != null ? money(r.rv.rev) : "—"}</td><td class="n">${r.earning ? '<span class="up">монетизирован</span>' : pct(r.yppP, 0)}</td></tr>`).join("")}</tbody></table></div>
     <div class="note">Сравнивайте каналы по медианам и конверсиям, а не по абсолютам. «До YPP» — грубая сводка: половина — подписчики, половина — часы или Shorts.</div></section>
