@@ -39,7 +39,7 @@
    ```bash
    cd ~/code/yt-dashboard && .venv/bin/python collector/auth.py client ~/Downloads/client_secret_*.json
    .venv/bin/python collector/auth.py add      # выбрать аккаунт канала → «Разрешить»
-   gh secret set DASH_PASSWORD -R evgeniigusv/yt-dashboard   # придумать пароль дашборда
+   gh secret set DASH_PASSWORD -R evgeniigusv/yt-dashboard   # придумать пароль дашборда (от 8 символов)
    ```
 3. Запустить сбор сразу: `gh workflow run collect -R evgeniigusv/yt-dashboard` (дальше — сам каждые 3 часа).
 
