@@ -339,12 +339,12 @@ function channelsList() { return (S.index?.channels || []).filter(c => S.ch[c.sl
 function renderShell() {
   const sel = $("#channel");
   const list = channelsList();
-  sel.innerHTML = (list.length > 1 ? `<option value="__all">Все каналы (${list.length})</option>` : "") +
+  sel.innerHTML = `<option value="__all">Сводка · все каналы (${list.length})</option>` +
     list.map(c => `<option value="${esc(c.slug)}">${esc(S.ch[c.slug].channel?.title || c.name)}</option>`).join("");
-  if (!S.view || (S.view !== "__all" && !S.ch[S.view]) || (S.view === "__all" && list.length < 2)) S.view = list.length > 1 ? "__all" : list[0]?.slug;
+  if (!S.view || (S.view !== "__all" && !S.ch[S.view])) S.view = "__all";
   sel.value = S.view;
-  const tabs = S.view === "__all" ? [["summary", "Сводка"], ["calendar", "Календарь"], ["videos", "Ролики"]]
-    : [["overview", "Обзор"], ["videos", "Ролики"], ["calendar", "Календарь"], ["audience", "Аудитория"], ["money", "Монетизация"]];
+  const tabs = S.view === "__all" ? [["summary", "Сводка"], ["calendar", "Календарь"], ["videos", "Ролики"], ["costs", "Затраты"]]
+    : [["overview", "Обзор"], ["videos", "Ролики"], ["calendar", "Календарь"], ["costs", "Затраты"], ["audience", "Аудитория"], ["money", "Монетизация"]];
   if (!tabs.some(t => t[0] === S.tab)) S.tab = tabs[0][0];
   $("#tabs").innerHTML = tabs.map(([k, t]) => `<button role="tab" data-tab="${k}" aria-selected="${k === S.tab}">${t}</button>`).join("");
   document.querySelectorAll("#period button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.d === S.period)));
@@ -363,7 +363,7 @@ function render() {
   const ch = S.view === "__all" ? null : S.ch[S.view];
   const fn = {
     summary: renderSummary, overview: renderOverview, videos: renderVideos, calendar: renderCalendar,
-    audience: renderAudience, money: renderMoney,
+    audience: renderAudience, money: renderMoney, costs: renderCosts,
   }[S.tab];
   fn(m, ch);
 }
@@ -748,6 +748,105 @@ function renderAudience(m, ch) {
   </section>`;
 }
 
+// ---------------------------------------------------------------- production costs (pipeline tools/costs.py -> costs.json)
+const ECON = () => S.index?.economics || {};
+const STEP_RU = { research: "Исследование", script: "Сценарий", voice: "Озвучка", timeline: "Тайминг", images: "Картинки", music: "Музыка",
+  build: "Сборка", metadata: "Метаданные", thumbnails: "Превью", shorts: "Shorts", qc: "Проверка", upload: "Выгрузка",
+  make: "Создание", publish: "Публикация", analytics: "Аналитика", edits: "Правки" };
+const tok = n => (n == null ? "—" : fmt(n));
+function hfHistory() {  // one Higgsfield account for all channels: merge snapshots
+  const all = {};
+  for (const c of channelsList()) for (const [t, b] of S.ch[c.slug].costs?.hf_balance || []) all[t] = b;
+  return Object.entries(all).sort((a, b) => a[0].localeCompare(b[0]));
+}
+function hfSpent(from, to) {
+  const h = hfHistory().filter(([t]) => t.slice(0, 10) >= from && t.slice(0, 10) <= to);
+  let s = 0; for (let i = 1; i < h.length; i++) if (h[i - 1][1] > h[i][1]) s += h[i - 1][1] - h[i][1];
+  return h.length > 1 ? s : null;
+}
+function lastLimits() {
+  const l = channelsList().flatMap(c => S.ch[c.slug].costs?.claude_limits || []).sort((a, b) => a.t.localeCompare(b.t));
+  return l[l.length - 1] || null;
+}
+function claudeRuns(from, to) {
+  return channelsList().flatMap(c => (S.ch[c.slug].costs?.claude_runs || []).filter(r => r.t.slice(0, 10) >= from && r.t.slice(0, 10) <= to));
+}
+function costRows(ch) {
+  const cal = Object.fromEntries((ch.calendar?.items || []).map(i => [i.id, i]));
+  return Object.entries(ch.costs?.videos || {}).map(([slug, c]) => {
+    const yv = c.youtube_id && ch.videos?.[c.youtube_id];
+    const views = [c.youtube_id, ...(c.shorts_ids || [])].reduce((s, id) => s + (ch.videos?.[id] ? vm(ch.videos[id], ch).views : 0), 0);
+    const hf = c.hf?.fact ?? null;
+    return { slug, c, title: yv?.title || cal[slug]?.title || slug, status: cal[slug]?.status || (c.trial ? "тест" : "—"),
+      hfPlan: c.hf?.plan ?? null, hf, views: c.youtube_id ? views : null, trial: !!c.trial,
+      per1k: hf && views >= 100 ? hf / views * 1000 : null, perMin: hf && c.seconds ? hf / (c.seconds / 60) : null,
+      out: c.claude?.fact?.output ?? null, outPlan: c.claude_plan?.output ?? null, turns: c.claude?.fact?.turns ?? null };
+  }).sort((a, b) => b.slug.localeCompare(a.slug));
+}
+function perVideoCredits(rows) { return median(rows.filter(r => !r.trial && r.hf).map(r => r.hf)); }
+function runway(balance, perVideo) {
+  if (!balance || !perVideo) return null;
+  const n = Math.floor(balance / perVideo);
+  const future = channelsList().flatMap(c => calendarItems(S.ch[c.slug])).filter(it => it.format !== "short" && new Date(it.dateOnly ? it.date + "T23:59" : it.date) > new Date())
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return { n, until: future[n] ? future[n].date : null };
+}
+const usd = cr => (ECON().usd_per_hf_credit && cr != null ? cr * ECON().usd_per_hf_credit : null);
+function renderCosts(m, ch) {
+  const chans = ch ? [ch] : channelsList().map(c => S.ch[c.slug]);
+  const rows = chans.flatMap(c => costRows(c).map(r => ({ ...r, ch: c })));
+  if (!chans.some(c => c.costs)) { m.innerHTML = `<div class="empty">Конвейер ещё не прислал costs.json (tools/costs.py).</div>`; return; }
+  const h = hfHistory(), bal = h.length ? h[h.length - 1] : null;
+  const pv = perVideoCredits(rows), rw = runway(bal?.[1], pv);
+  const total = rows.reduce((s, r) => s + (r.hf || 0), 0);
+  const outside = chans.reduce((s, c) => s + (c.costs?.hf_unattributed || 0), 0);
+  const outTok = rows.reduce((s, r) => s + (r.out || 0), 0);
+  const lim = lastLimits();
+  const steps = {};
+  for (const r of rows) for (const [k, v] of Object.entries(r.c.hf?.steps || {})) steps[k] = (steps[k] || 0) + v;
+  const N = S.period, rg = ch ? range(ch, N) : [addDays(dayStr(new Date()), -N + 1), dayStr(new Date())];
+  m.innerHTML = `
+  <section class="tiles">
+    ${kpiTile("Баланс Higgsfield, кр.", bal ? fmt(bal[1], 0) : "—", bal ? `на ${fmtDate(bal[0])}${ch?.costs?.hf_plan ? " · план " + esc(ch.costs.hf_plan) : ""}` : "нет снимков")}
+    ${kpiTile("Хватит на, роликов", rw ? `≈ ${rw.n}` : "—", rw?.until ? `по календарю — до ${fmtDate(rw.until.length > 10 ? rw.until : rw.until + "T12:00", false)}` : pv ? "" : "нужна история затрат")}
+    ${kpiTile("Себестоимость ролика, кр.", pv ? fmt(pv, 0) : "—", pv ? (usd(pv) != null ? money(usd(pv)) + " · медиана, ролик + 3 Shorts" : "медиана, ролик + 3 Shorts") : "")}
+    ${kpiTile(`Потрачено за ${N} д, кр.`, hfSpent(...rg) != null ? fmt(hfSpent(...rg), 0) : "—", "по снимкам баланса")}
+    ${kpiTile("Потрачено всего, кр.", fmt(total, 0), `по роликам; вне роликов ещё ${fmt(outside, 1)}`)}
+    ${kpiTile("Claude: токены вывода", tok(outTok), lim ? `лимит недели ${pct(lim.weekly, 0)} · 5 ч ${pct(lim.five_hour, 0)} (${fmtDate(lim.t)})` : "лимиты снимаются из приложения")}
+  </section>
+  <section class="card"><h2>План и факт по роликам</h2>
+    <div class="tablewrap"><table><thead><tr>${ch ? "" : "<th>Канал</th>"}<th>Ролик</th><th>Статус</th><th class="n">План, кр.</th><th class="n">Факт, кр.</th><th class="n">Δ</th><th class="n">Кр./мин видео</th><th class="n">Работа, мин</th><th class="n">Claude, вывод (план / факт)</th><th class="n">Просмотры (ролик+Shorts)</th><th class="n">Кр. на 1000 просм.</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const d = r.hfPlan && r.hf ? (r.hf - r.hfPlan) / r.hfPlan * 100 : null;
+      return `<tr ${r.c.youtube_id ? `data-video="${esc(r.c.youtube_id)}" data-ch="${esc(r.ch.slug)}"` : ""}>${ch ? "" : `<td>${esc(r.ch.channel?.title || r.ch.name)}</td>`}
+      <td class="title" title="${esc(r.c.hf?.source || "")}">${esc(r.title)}</td><td>${r.status in STATUS ? `<span class="st st-${r.status}">${STATUS[r.status]}</span>` : esc(r.status)}</td>
+      <td class="n">${r.hfPlan != null ? fmt(r.hfPlan, 1) : "—"}</td><td class="n">${r.hf != null ? fmt(r.hf, 1) : "—"}${r.c.hf?.source?.startsWith("manual") ? " ≈" : ""}</td>
+      <td class="n">${d != null ? `<span class="${d > 10 ? "down" : d < -10 ? "up" : "muted"}">${d > 0 ? "+" : ""}${pct(d, 0)}</span>` : "—"}</td>
+      <td class="n">${r.perMin ? fmt(r.perMin, 1) : "—"}</td><td class="n">${r.c.minutes?.fact ?? "—"}</td>
+      <td class="n">${tok(r.outPlan)} / ${tok(r.out)}</td><td class="n">${r.views != null ? fmt(r.views) : "—"}</td><td class="n">${r.per1k ? fmt(r.per1k, 1) : "—"}</td></tr>`;
+    }).join("")}</tbody></table></div>
+    <div class="note">План — по истории канала (кредитов на минуту видео × плановая длина; токены — медиана прошлых роликов). Факт Higgsfield — разница баланса на каждом шаге (journal.py), «≈» — оценка для роликов до появления журнала. Токены Claude — из расшифровки сессий конвейера (ввод и кэш — во всплывающей подсказке на вкладке ниже).</div>
+  </section>
+  <section class="grid g2">
+    <div class="card"><h2>Куда уходят кредиты Higgsfield</h2>${hbars(Object.entries(steps).sort((a, b) => b[1] - a[1]).map(([k, v]) => [STEP_RU[k] || k, v]), v => fmt(v, 1))}</div>
+    <div class="card"><h2>Баланс Higgsfield</h2>${h.length > 1 ? `<div class="chart"><canvas id="cBal"></canvas></div>` : `<div class="empty">Нужно хотя бы два снимка баланса</div>`}</div>
+  </section>
+  <section class="card"><h2>Claude по шагам</h2>${claudeStepsHtml(rows)}</section>`;
+  if (h.length > 1) lineChart($("#cBal"), h.map(([t]) => fmtDate(t, false)), [{ label: "Кредиты", data: h.map(x => x[1]), color: css("--s3") }], v => fmt(v, 0));
+}
+function claudeStepsHtml(rows) {
+  const st = {};
+  for (const r of rows) for (const [k, v] of Object.entries(r.c.claude?.steps || {})) {
+    const a = st[k] ||= { output: 0, input: 0, cache_write: 0, cache_read: 0 };
+    for (const f in a) a[f] += v[f] || 0;
+  }
+  const ks = Object.keys(st);
+  if (!ks.length) return `<div class="empty">Появится после первого ролика, сделанного с costs.py (облачные запуски пишут токены сами)</div>`;
+  return `<div class="tablewrap"><table><thead><tr><th>Шаг</th><th class="n">Вывод</th><th class="n">Ввод</th><th class="n">Запись в кэш</th><th class="n">Чтение кэша</th></tr></thead><tbody>${ks.map(k =>
+    `<tr><td>${STEP_RU[k] || esc(k)}</td><td class="n">${tok(st[k].output)}</td><td class="n">${tok(st[k].input)}</td><td class="n">${tok(st[k].cache_write)}</td><td class="n">${tok(st[k].cache_read)}</td></tr>`).join("")}</tbody></table></div>
+    <div class="note">На подписке токены не стоят денег напрямую — они расходуют лимиты (5 часов и неделя). Чтение кэша дешёвое и в лимиты почти не идёт; главный расход — вывод и запись в кэш.</div>`;
+}
+
 // ---------------------------------------------------------------- tab: summary (all channels)
 function renderSummary(m) {
   const N = S.period;
@@ -767,17 +866,62 @@ function renderSummary(m) {
   const rev = rows.reduce((s, r) => s + (r.rv?.rev || 0), 0);
   const allOut = chans.flatMap(ch => outliers(ch).map(o => ({ ...o, ch }))).sort((a, b) => b.ratio - a.ratio).slice(0, 8);
   const allAlerts = chans.flatMap(ch => alerts(ch).filter(a => a[0] !== "good").map(a => [a[0], `${esc(ch.channel?.title || ch.name)}: ${a[1]}`, a[2], a[3], ch.slug]));
+  { const h0 = hfHistory(), b0 = h0.length ? h0[h0.length - 1][1] : null, p0 = perVideoCredits(chans.flatMap(costRows)), l0 = lastLimits();
+    if (b0 != null && p0 && b0 < p0 * 3) allAlerts.unshift(["critical", "Кредиты Higgsfield заканчиваются", `Баланс ${fmt(b0, 0)} — это примерно ${Math.floor(b0 / p0)} роликов. Пополнить до следующих запусков.`]);
+    if (l0 && l0.weekly >= 80) allAlerts.unshift(["warning", "Лимит Claude на неделю почти исчерпан", `Использовано ${pct(l0.weekly, 0)} (снимок ${fmtDate(l0.t)}). Облачные запуски могут остановиться.`]);
+    const failed = chans.flatMap(calendarItems).filter(it => it.status === "failed");
+    for (const f of failed) allAlerts.unshift(["critical", "Ошибка выгрузки", `«${esc(f.title)}» — не опубликовано, причина в publish_log.md.`]); }
   const upcoming = chans.flatMap(ch => calendarItems(ch)).filter(it => new Date(it.date) >= new Date()).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 12);
   const colors = Object.assign({}, ...chans.map(rubricColors));
+  // ---- business block
+  const rg = [addDays(dayStr(new Date()), -N + 1), dayStr(new Date())];
+  const monetized = rows.filter(r => r.earning).length;
+  const revAll = chans.reduce((s, c) => s + objs(c.daily?.revenue).reduce((a, r) => a + (r.estimatedRevenue || 0), 0), 0);
+  const h = hfHistory(), bal = h.length ? h[h.length - 1] : null;
+  const crows = chans.flatMap(costRows), pv = perVideoCredits(crows), rw = runway(bal?.[1], pv);
+  const spent = hfSpent(...rg);
+  const runs = claudeRuns(...rg), outTok = runs.reduce((s, r) => s + (r.output || 0), 0), lim = lastLimits();
+  const cal = chans.flatMap(calendarItems);
+  const inRg = it => localDay(it.date) >= rg[0] && localDay(it.date) <= rg[1];
+  const planned = cal.filter(it => it.format !== "short" && inRg(it) && new Date(it.dateOnly ? it.date + "T12:00" : it.date) <= new Date()).length;
+  const done = cal.filter(it => it.format !== "short" && inRg(it) && it.status === "published").length;
+  const st = k => cal.filter(it => it.status === k).length;
+  const E = ECON(), fixed = Object.entries(E.fixed_monthly_usd || {});
+  const fixedKnown = fixed.filter(([, v]) => v != null).reduce((a, [, v]) => a + v, 0);
+  const missing = fixed.filter(([, v]) => v == null).map(([k]) => k);
+  const hfMonthUsd = usd(hfSpent(addDays(dayStr(new Date()), -29), dayStr(new Date())));
+  const burn = fixedKnown + (hfMonthUsd || 0);
+  const rev30 = chans.reduce((s, c) => s + (revenue(c, range(c, 30))?.rev || 0), 0);
   m.innerHTML = `
-  <section class="tiles">
+  <section><h2>Хозяйство · ${N} дней</h2><div class="tiles">
+    ${kpiTile("Каналы", `${chans.length}`, `монетизировано ${monetized} из ${chans.length}`)}
+    ${kpiTile("Заработано", money(rows.reduce((s, r) => s + (r.rv?.rev || 0), 0)), `за всё время ${money(revAll)}`)}
+    ${kpiTile("Расходы в месяц", burn ? money(burn) : "—", missing.length ? `не указаны цены: ${esc(missing.join(", "))}` : (E.usd_per_hf_credit ? "подписки + кредиты за 30 дней" : "подписки; цена кредита не указана"))}
+    ${kpiTile("Окупаемость", burn ? pct(rev30 / burn * 100, 0) : "—", burn ? `доход 30 дней ${money(rev30)} / расходы ${money(burn)}` : "укажите цены в channels.json")}
+    ${kpiTile("Higgsfield", bal ? fmt(bal[1], 0) + " кр." : "—", rw ? `хватит на ~${rw.n} роликов${rw.until ? " (до " + fmtDate(rw.until.length > 10 ? rw.until : rw.until + "T12:00", false) + ")" : ""}` : "нет истории затрат")}
+    ${kpiTile("Потрачено кредитов", spent != null ? fmt(spent, 1) : "—", pv ? `ролик в среднем ${fmt(pv, 1)} кр.` : "")}
+    ${kpiTile(lim ? "Claude · лимит недели" : "Claude · токены вывода", lim ? pct(lim.weekly, 0) : tok(outTok), lim ? `5 ч: ${pct(lim.five_hour, 0)} · снимок ${fmtDate(lim.t)} · вывод за период ${tok(outTok)}` : `токенов вывода за период`)}
+    ${kpiTile("Выпуск по плану", planned ? `${done} из ${planned}` : `${done}`, "роликов вышло / должно было выйти за период")}
+  </div></section>
+  <section class="grid g2">
+    <div class="card"><h2>Производство сейчас</h2><div class="hbars">${[["in_production", st("in_production")], ["ready", st("ready")], ["scheduled", st("scheduled")], ["failed", st("failed")], ["planned", st("planned")]].map(([k, n]) =>
+      `<div class="hbar"><span class="t"><span class="st st-${k}">${STATUS[k]}</span></span><span class="x" style="text-align:left">${n}</span><span></span></div>`).join("")}</div>
+      <div class="note">«Готово, ждёт ОК» — ролики, которые ждут твоего «Ок» в Telegram. «Ошибка выгрузки» — смотреть publish_log.md.</div></div>
+    <div class="card"><h2>Экономика каналов</h2><div class="tablewrap"><table><thead><tr><th>Канал</th><th class="n">Роликов</th><th class="n">Кредитов всего</th><th class="n">На ролик</th><th class="n">На 1000 просм.</th><th class="n">Claude, вывод</th><th class="n">Доход всего</th></tr></thead><tbody>${chans.map(c => {
+      const cr = costRows(c), t = cr.reduce((s, r) => s + (r.hf || 0), 0), vw = cr.reduce((s, r) => s + (r.views || 0), 0);
+      const rv = objs(c.daily?.revenue).reduce((a, r) => a + (r.estimatedRevenue || 0), 0);
+      return `<tr data-open="${esc(c.slug)}"><td>${esc(c.channel?.title || c.name)}</td><td class="n">${cr.filter(r => !r.trial).length}</td><td class="n">${fmt(t, 1)}</td><td class="n">${fmt(perVideoCredits(cr), 1)}</td><td class="n">${vw >= 100 ? fmt(t / vw * 1000, 1) : "—"}</td><td class="n">${tok(cr.reduce((s, r) => s + (r.out || 0), 0) || null)}</td><td class="n">${money(rv || null)}</td></tr>`;
+    }).join("")}</tbody></table></div>
+    ${fixed.length ? `<div class="note">Подписки в месяц: ${fixed.map(([k, v]) => `${esc(k)} ${v != null ? money(v) : "— не указано"}`).join(" · ")}. Цена кредита Higgsfield: ${E.usd_per_hf_credit ? money(E.usd_per_hf_credit) : "не указана"}.</div>` : ""}</div>
+  </section>
+  <section><h2>Аудитория · ${N} дней</h2><div class="tiles">
     ${kpiTile("Подписчики, всего", fmt(chans.reduce((s, c) => s + (c.channel?.subscribers || 0), 0)), `<span class="up">+${fmt(T("subscribersGained") - T("subscribersLost"))}</span> <span class="muted">за ${N} д</span>`)}
     ${kpiTile("Просмотры", fmt(T("views")), delta(T("views"), P("views")))}
     ${kpiTile("Engaged-просмотры", fmt(T("engagedViews")), delta(T("engagedViews"), P("engagedViews")))}
     ${kpiTile("Часы просмотра", fmt(T("estimatedMinutesWatched") / 60), delta(T("estimatedMinutesWatched"), P("estimatedMinutesWatched")))}
     ${kpiTile("Доход", rev ? money(rev) : "—", rev ? "сумма по каналам" : "пока ни один канал не монетизирован")}
     ${kpiTile("Вышло за период", `${rows.reduce((s, r) => s + r.longs, 0)} + ${rows.reduce((s, r) => s + r.shorts, 0)}`, "роликов + Shorts")}
-  </section>
+  </div></section>
   <section><h2>Каналы · ${N} дней</h2><div class="tablewrap"><table><thead><tr>
     <th>Канал</th><th class="n">Подписчики</th><th class="n">Прирост</th><th class="n">Просмотры</th><th class="n">Δ</th><th class="n">Часы</th><th class="n">CTR</th><th class="n">0:30 (мед.)</th><th class="n">% просм. (мед.)</th><th class="n">Вышло</th><th class="n">Доход</th><th class="n">До YPP</th></tr></thead>
     <tbody>${rows.map(r => `<tr data-open="${esc(r.ch.slug)}"><td>${esc(r.ch.channel?.title || r.ch.name)}${r.ch.errors?.length ? ' <span class="badge b-na">предупр.</span>' : ""}</td>

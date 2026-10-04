@@ -6,10 +6,24 @@
       "channel_id": "UCMIeVk1Qcuf6r9I2zOz7uzg",
       "calendar": {
         "repo": "evgeniigusv/chalkonaut",
-        "branches": ["claude/state", "main"],
+        "branches": [
+          "claude/state",
+          "main"
+        ],
         "path": "calendar.json",
         "deploy_key_env": "DEPLOY_KEY_CHALKONAUT"
       }
     }
-  ]
+  ],
+  "economics": {
+    "currency": "USD",
+    "usd_per_hf_credit": null,
+    "fixed_monthly_usd": {
+      "Claude Pro": 20,
+      "Higgsfield Plus": null,
+      "vidIQ": null,
+      "Upload-Post": null
+    },
+    "note": "null = цена не указана; заполните, чтобы дашборд считал окупаемость"
+  }
 }

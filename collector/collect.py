@@ -116,7 +116,9 @@ class Channel:
         out["audience"] = self.audience() if heavy or "audience" not in self.prev else self.prev["audience"]
         out["ypp"] = self.ypp(out["channel"]["subscribers"], videos)
         out["reach_state"] = self.reach(videos)
+        self.costs = None
         out["calendar"] = self.safe("calendar", self.calendar, self.prev.get("calendar"))
+        out["costs"] = self.costs or self.prev.get("costs")
         out["errors"] = self.errors
         return out
 
@@ -300,6 +302,9 @@ class Channel:
                 if r.returncode == 0 and f.exists():
                     data = json.loads(f.read_text())
                     data["source"] = f"{cal['repo']}@{branch}"
+                    costs = dst / cal.get("costs_path", "costs.json")  # production costs (pipeline tools/costs.py)
+                    if costs.exists():
+                        self.costs = json.loads(costs.read_text()) | {"source": f"{cal['repo']}@{branch}"}
                     return data
         raise RuntimeError(f"calendar.json not found in {cal['repo']} {cal.get('branches')}")
 
@@ -338,7 +343,7 @@ def main():
         except Exception:
             traceback.print_exc()
             index.append({k: c[k] for k in ("slug", "name", "channel_id")} | {"status": "failed"})
-    (DATA / "index.enc").write_text(encrypt({"channels": index, "generated_at":
+    (DATA / "index.enc").write_text(encrypt({"channels": index, "economics": cfg.get("economics", {}), "generated_at":
                                              dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}, password))
 
 

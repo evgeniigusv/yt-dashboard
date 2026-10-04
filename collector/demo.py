@@ -103,8 +103,27 @@ def gen_channel(slug, name, seed, created_days, scale):
     sh90 = sum(r[2] for r in daily["SHORTS"]["rows"] if r[0] >= str(TODAY - dt.timedelta(days=90)))
     traffic = lambda shares: {"cols": ["insightTrafficSourceType", "views", "estimatedMinutesWatched"],
                               "rows": [[k, int(v * 10000), int(v * 30000)] for k, v in shares]}
+    # made-up production costs in the pipeline's costs.json shape
+    costs = {"videos": {}, "hf_balance": [], "claude_runs": [], "claude_limits": [], "hf_plan": "plus", "hf_unattributed": 12.5}
+    bal = 4000.0
+    for it in cal_items:
+        if it["format"] != "long" or it["status"] not in ("published", "scheduled"):
+            continue
+        sec = videos[it["youtube_id"]]["duration"]
+        fact = round(sec / 60 * rnd.uniform(7, 9.5), 1)
+        shorts = [x["youtube_id"] for x in cal_items if x.get("parent") == it["id"] and x.get("youtube_id")]
+        costs["videos"][it["id"]] = {"youtube_id": it["youtube_id"], "shorts_ids": shorts, "seconds": sec,
+            "hf": {"plan": round(sec / 60 * 8, 1), "fact": fact, "steps": {"voice": round(fact * .4, 1), "images": round(fact * .55, 1), "thumbnails": round(fact * .05, 1)}},
+            "minutes": {"fact": rnd.randint(55, 95)},
+            "claude": {"fact": {"output": rnd.randint(150000, 260000), "input": 9000, "cache_write": 1200000, "cache_read": 40000000, "turns": 300},
+                       "steps": {"make": {"output": 200000, "input": 8000, "cache_write": 1000000, "cache_read": 35000000}, "publish": {"output": 15000, "input": 500, "cache_write": 100000, "cache_read": 3000000}}},
+            "claude_plan": {"output": 210000}}
+        bal -= fact
+        costs["hf_balance"].append([videos[it["youtube_id"]]["published_at"], round(bal, 2)])
+        costs["claude_runs"].append({"slug": it["id"], "step": "make", "t": videos[it["youtube_id"]]["published_at"], "output": 200000})
+    costs["claude_limits"].append({"t": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "five_hour": 40.0, "weekly": 63.0})
     return {
-        "v": 1, "slug": slug, "name": name, "channel_id": "DEMO" + slug, "demo": True,
+        "v": 1, "slug": slug, "name": name, "channel_id": "DEMO" + slug, "demo": True, "costs": costs,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "channel": {"id": "DEMO" + slug, "title": name, "published_at": f"{created}T00:00:00Z", "subscribers": subs,
                     "views": sum(r[1] for r in daily["all"]["rows"]), "video_count": len(videos)},
@@ -175,6 +194,6 @@ if __name__ == "__main__":
              gen_channel("demo-history", "Демо-канал 2 (история)", 2, 40, 0.5)]
     for c in chans:
         (OUT / f"{c['slug']}.enc").write_text(encrypt(c, "demo"))
-    (OUT / "index.enc").write_text(encrypt({"channels": [{"slug": c["slug"], "name": c["name"], "channel_id": c["channel_id"],
+    (OUT / "index.enc").write_text(encrypt({"economics": {"currency": "USD", "usd_per_hf_credit": 0.06, "fixed_monthly_usd": {"Claude Pro": 20, "Higgsfield Plus": 39, "vidIQ": None}}, "channels": [{"slug": c["slug"], "name": c["name"], "channel_id": c["channel_id"],
                                                           "status": "ok"} for c in chans]}, "demo"))
     print("demo written:", [c["slug"] for c in chans])
