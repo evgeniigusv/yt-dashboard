@@ -349,7 +349,9 @@ function renderShell() {
   $("#tabs").innerHTML = tabs.map(([k, t]) => `<button role="tab" data-tab="${k}" aria-selected="${k === S.tab}">${t}</button>`).join("");
   document.querySelectorAll("#period button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.d === S.period)));
   const gens = list.map(c => S.ch[c.slug].generated_at).sort();
-  $("#fresh").textContent = gens.length ? `обновлено ${fmtDate(gens[0])}` : "";
+  const lastA = list.map(c => daily(S.ch[c.slug]).filter(r => r.views).map(r => r.day).pop()).filter(Boolean).sort()[0];
+  $("#fresh").textContent = gens.length ? `обновлено ${fmtDate(gens[0])} · Analytics ${lastA ? "по " + fmtDate(lastA + "T12:00:00", false) : "ещё без данных"}` : "";
+  $("#fresh").title = "YouTube Analytics отдаёт статистику с задержкой 2–3 дня; счётчики просмотров роликов — сразу";
   $("#demo").classList.toggle("hidden", !list.some(c => S.ch[c.slug].demo));
   store.set("ytdash.view", S.view); store.set("ytdash.tab", S.tab); store.set("ytdash.period", String(S.period));
   render();
@@ -378,7 +380,8 @@ function renderOverview(m, ch) {
   const rpm = rv?.rev != null && t.views ? rv.rev / t.views * 1000 : null;
   const longAvd = tl.views ? tl.estimatedMinutesWatched * 60 / tl.views : null;
   const engShare = t.views && t.engagedViews != null ? t.engagedViews / t.views * 100 : null;
-  m.innerHTML = `
+  const noA = !daily(ch).some(r => r.views);
+  m.innerHTML = `${noA ? `<div class="alert info" style="margin-bottom:12px"><span class="ic">i</span><div><b>YouTube Analytics ещё не отдал цифры по роликам</b><div class="small ink2">Статистика приходит с задержкой 2–3 дня, а у нового канала — до 3–4 дней. Пока работают счётчики просмотров во вкладке «Ролики» и календарь. Показы и CTR появятся примерно через 2 дня после первого сбора.</div></div></div>` : ""}
   <section><div class="tiles">
     ${kpiTile("Подписчики", fmt(ch.channel?.subscribers), `<span class="${net >= 0 ? "up" : "down"}">${net >= 0 ? "+" : ""}${fmt(net)}</span> <span class="muted">за ${N} д (+${fmt(t.subscribersGained)} / −${fmt(t.subscribersLost)})</span>`)}
     ${kpiTile("Просмотры", fmt(t.views), delta(t.views, p.views), "С 24.08.2026 YouTube считает просмотр с первого кадра")}

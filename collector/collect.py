@@ -111,8 +111,8 @@ class Channel:
         out["videos"] = videos
         out["traffic"] = {k: self.safe(f"traffic {k}", lambda f=f: self.report(
             "views,estimatedMinutesWatched", TODAY - dt.timedelta(days=28), dimensions="insightTrafficSourceType",
-            filters=f, sort="-views")) for k, f in (("all", None), ("SHORTS", "creatorContentType==SHORTS"),
-                                                    ("VIDEO_ON_DEMAND", "creatorContentType==VIDEO_ON_DEMAND"))}
+            filters=f, sort="-views")) for k, f in (("all", None), ("SHORTS", "creatorContentType==shorts"),
+                                                    ("VIDEO_ON_DEMAND", "creatorContentType==videoOnDemand"))}
         out["audience"] = self.audience() if heavy or "audience" not in self.prev else self.prev["audience"]
         out["ypp"] = self.ypp(out["channel"]["subscribers"], videos)
         out["reach_state"] = self.reach(videos)
@@ -148,8 +148,8 @@ class Channel:
 
     def daily(self, start):
         out = {}
-        for key, f in (("all", None), ("SHORTS", "creatorContentType==SHORTS"),
-                       ("VIDEO_ON_DEMAND", "creatorContentType==VIDEO_ON_DEMAND")):
+        for key, f in (("all", None), ("SHORTS", "creatorContentType==shorts"),
+                       ("VIDEO_ON_DEMAND", "creatorContentType==videoOnDemand")):
             out[key] = self.safe(f"daily {key}", lambda f=f: self.report(CORE, start, dimensions="day", filters=f, sort="day"))
         out["revenue"] = self.safe("revenue (needs monetization + monetary scope)",
                                    lambda: self.report(REVENUE, start, dimensions="day", sort="day"))
@@ -157,8 +157,8 @@ class Channel:
 
     def video_analytics(self, vids, start):
         """Lifetime totals per video; the SHORTS / VOD filtered lists also tell the real format."""
-        for key, f in (("SHORTS", "creatorContentType==SHORTS"), ("VIDEO_ON_DEMAND", "creatorContentType==VIDEO_ON_DEMAND"),
-                       ("LIVE_STREAM", "creatorContentType==LIVE_STREAM")):
+        for key, f in (("SHORTS", "creatorContentType==shorts"), ("VIDEO_ON_DEMAND", "creatorContentType==videoOnDemand"),
+                       ("LIVE_STREAM", "creatorContentType==liveStream")):
             r = self.safe(f"videos {key}", lambda f=f: self.report(VIDEO, start, dimensions="video", filters=f,
                                                                     sort="-views", maxResults=200))
             if not r:
@@ -215,12 +215,12 @@ class Channel:
         y365, d90 = TODAY - dt.timedelta(days=365), TODAY - dt.timedelta(days=90)
         tot = lambda label, m, start, f=None: self.safe(label, lambda: (self.report(m, start, filters=f)["rows"] or [[0]])[0][0], None)
         all_min = tot("ypp minutes", "estimatedMinutesWatched", y365)
-        shorts_min = tot("ypp shorts minutes", "estimatedMinutesWatched", y365, "creatorContentType==SHORTS") or 0
+        shorts_min = tot("ypp shorts minutes", "estimatedMinutesWatched", y365, "creatorContentType==shorts") or 0
         uploads90 = sum(1 for v in vids.values() if v.get("privacy") == "public" and (v.get("published_at") or "")[:10] >= iso(d90))
         return {"subscribers": subs,
                 "long_watch_hours_365": None if all_min is None else round((all_min - shorts_min) / 60, 1),
-                "shorts_views_90": tot("ypp shorts views", "views", d90, "creatorContentType==SHORTS"),
-                "shorts_engaged_90": tot("ypp shorts engaged", "engagedViews", d90, "creatorContentType==SHORTS"),
+                "shorts_views_90": tot("ypp shorts views", "views", d90, "creatorContentType==shorts"),
+                "shorts_engaged_90": tot("ypp shorts engaged", "engagedViews", d90, "creatorContentType==shorts"),
                 "public_uploads_90": uploads90}
 
     def reach(self, vids):
