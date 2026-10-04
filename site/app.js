@@ -702,21 +702,22 @@ function agendaHtml(items, colors, ch) {
   return `<div class="agenda">${items.map(it => {
     const when = it.dateOnly ? fmtDate(it.date + "T12:00:00", false) : fmtDate(it.date);
     const click = it.youtube_id && ch.videos?.[it.youtube_id]?.privacy === "public" ? `data-video="${esc(it.youtube_id)}" data-ch="${esc(it.slug)}"` : it.url ? `data-url="${esc(it.url)}"` : "";
-    return `<div class="arow ${it.format === "short" && it.parent ? "child" : ""}" style="--rc:${colors[it.rubric] || "var(--axis)"}" ${click}>
+    return `<div class="arow ${it.format === "short" && it.parent ? "child" : ""}" style="--rc:${it.cc || colors[it.rubric] || "var(--axis)"}" ${click}>
       <span class="when">${when}</span>
-      <span class="what"><span class="fmt">${it.format === "short" ? "SHORT" : "РОЛИК"}</span>${it.rubric ? `<b>${esc(it.rubric)}</b> · ` : ""}${esc(it.title)}${S.view === "__all" ? ` <span class="muted small">· ${esc(S.ch[it.slug]?.channel?.title || it.slug)}</span>` : ""}</span>
+      <span class="what"><span class="fmt">${it.format === "short" ? "SHORT" : "РОЛИК"}</span>${S.view === "__all" ? `<b>${esc(S.ch[it.slug]?.channel?.title || it.slug)}</b> · ` : ""}${it.rubric ? `${esc(it.rubric)} · ` : ""}${esc(it.title)}</span>
       <span class="st st-${it.status}">${STATUS[it.status] || it.status}</span></div>`;
   }).join("")}</div>`;
 }
+function chColor(slug) { return `var(--s${(channelsList().findIndex(c => c.slug === slug) % 8) + 1})`; }
+function allChannelItems() {  // every channel's calendar, coloured by channel
+  return channelsList().flatMap(c => calendarItems(S.ch[c.slug]).map(it => ({ ...it, cc: chColor(c.slug), chName: S.ch[c.slug].channel?.title || c.name })));
+}
+S.calHide = new Set();
 function renderCalendar(m, ch) {
   const chans = ch ? [ch] : channelsList().map(c => S.ch[c.slug]);
-  let items = [];
+  let items = ch ? calendarItems(ch) : allChannelItems().filter(it => !S.calHide.has(it.slug));
   const colors = {};
-  for (const c of chans) {
-    const rc = rubricColors(c);
-    for (const it of calendarItems(c)) { items.push(it); }
-    Object.assign(colors, rc);
-  }
+  for (const c of chans) Object.assign(colors, rubricColors(c));
   if (!S.calMonth) { const n = new Date(); S.calMonth = [n.getFullYear(), n.getMonth()]; }
   const [Y, M] = S.calMonth;
   const first = new Date(Y, M, 1);
@@ -732,7 +733,7 @@ function renderCalendar(m, ch) {
     const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     if (i >= 35 && d.getMonth() !== M) break;
     cells += `<div class="day ${d.getMonth() !== M ? "out" : ""} ${k === todayK ? "today" : ""}"><span class="dn">${d.getDate()}</span>${(byDay[k] || []).map(it =>
-      `<div class="ev ${it.status} ${it.format === "short" ? "short" : ""}" style="--rc:${colors[it.rubric] || "var(--axis)"}" title="${esc(`${STATUS[it.status] || it.status} · ${it.format === "short" ? "Shorts" : "Ролик"}${it.rubric ? " · рубрика " + it.rubric : ""}${it.parentTitle ? " · из ролика «" + it.parentTitle + "»" : ""}\n${it.title}${it.note ? "\n" + it.note : ""}`)}" ${it.youtube_id && S.ch[it.slug]?.videos?.[it.youtube_id]?.privacy === "public" ? `data-video="${esc(it.youtube_id)}" data-ch="${esc(it.slug)}"` : it.url ? `data-url="${esc(it.url)}"` : ""}>${evTime(it) ? `<span class="tm">${evTime(it)}</span> ` : ""}${it.format === "short" ? "▮ " : ""}${esc(it.title)}</div>`).join("")}</div>`;
+      `<div class="ev ${it.status} ${it.format === "short" ? "short" : ""}" style="--rc:${it.cc || colors[it.rubric] || "var(--axis)"}" title="${esc(`${STATUS[it.status] || it.status} · ${it.format === "short" ? "Shorts" : "Ролик"}${it.rubric ? " · рубрика " + it.rubric : ""}${it.parentTitle ? " · из ролика «" + it.parentTitle + "»" : ""}\n${it.title}${it.note ? "\n" + it.note : ""}`)}" ${it.youtube_id && S.ch[it.slug]?.videos?.[it.youtube_id]?.privacy === "public" ? `data-video="${esc(it.youtube_id)}" data-ch="${esc(it.slug)}"` : it.url ? `data-url="${esc(it.url)}"` : ""}>${evTime(it) ? `<span class="tm">${evTime(it)}</span> ` : ""}${it.chName ? `<b>${esc(it.chName)}</b> · ` : ""}${it.format === "short" ? "▮ " : ""}${esc(it.title)}</div>`).join("")}</div>`;
   }
   const rubrics = {};
   for (const c of chans) for (const [k, r] of Object.entries(c.calendar?.rubrics || {})) rubrics[k] = r;
@@ -743,7 +744,8 @@ function renderCalendar(m, ch) {
     <section class="card">
       <div class="calhead"><button class="ctl" id="calPrev" aria-label="Предыдущий месяц">←</button><span class="m">${first.toLocaleDateString("ru-RU", { month: "long", year: "numeric" })}</span><button class="ctl" id="calNext" aria-label="Следующий месяц">→</button><button class="ctl" id="calToday">Сегодня</button>
         <span class="spacer"></span><span class="small muted">время — ваше местное</span></div>
-      ${Object.keys(rubrics).length ? `<div class="rubrics">${Object.entries(rubrics).map(([k, r]) => `<span class="chip" style="--rc:${colors[k]}">${esc(k)} · ${esc(r.name || r)}</span>`).join("")}</div>` : ""}
+      ${!ch ? `<div class="rubrics">${channelsList().map(c => `<button class="chip" data-calch="${esc(c.slug)}" style="--rc:${chColor(c.slug)};cursor:pointer;border:0;${S.calHide.has(c.slug) ? "opacity:.4;text-decoration:line-through" : ""}">${esc(S.ch[c.slug].channel?.title || c.name)}</button>`).join("")}<span class="small muted">— нажмите, чтобы скрыть/показать канал; цвет полоски = канал</span></div>` : ""}
+      ${ch && Object.keys(rubrics).length ? `<div class="rubrics">${Object.entries(rubrics).map(([k, r]) => `<span class="chip" style="--rc:${colors[k]}">${esc(k)} · ${esc(r.name || r)}</span>`).join("")}</div>` : ""}
       <div class="rubrics small">${["published", "scheduled", "ready", "in_production", "planned"].map(s => `<span class="st st-${s}">${STATUS[s]}</span>`).join("")}</div>
       <div class="cal">${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map(d => `<div class="dow">${d}</div>`).join("")}${cells}</div>
       <div class="calmobile-note note" style="display:none">На телефоне месяц показан списком ниже.</div>
@@ -967,7 +969,7 @@ function renderSummary(m) {
     if (l0 && l0.weekly >= 80) allAlerts.unshift(["warning", "Лимит Claude на неделю почти исчерпан", `Использовано ${pct(l0.weekly, 0)} (снимок ${fmtDate(l0.t)}). Облачные запуски могут остановиться.`]);
     const failed = chans.flatMap(calendarItems).filter(it => it.status === "failed");
     for (const f of failed) allAlerts.unshift(["critical", "Ошибка выгрузки", `«${esc(f.title)}» — не опубликовано, причина в publish_log.md.`]); }
-  const upcoming = chans.flatMap(ch => calendarItems(ch)).filter(it => new Date(it.date) >= new Date()).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 12);
+  const upcoming = allChannelItems().filter(it => new Date(it.dateOnly ? it.date + "T23:59" : it.date) >= new Date()).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 14);
   const colors = Object.assign({}, ...chans.map(rubricColors));
   // ---- business block
   const rg = [addDays(dayStr(new Date()), -N + 1), dayStr(new Date())];
@@ -1012,6 +1014,9 @@ function renderSummary(m) {
     }).join("")}</tbody></table></div>
     ${fixed.length ? `<div class="note">Подписки в месяц: ${fixed.map(([k, v]) => `${esc(k)} ${v != null ? money(v) : "— не указано"}`).join(" · ")}. Цена кредита Higgsfield: ${E.usd_per_hf_credit ? money(E.usd_per_hf_credit) : "не указана"}.</div>` : ""}</div>
   </section>
+  <section class="card"><h2>Ближайшие выходы по всем каналам</h2>
+    <div class="rubrics">${channelsList().map(c => `<span class="chip" style="--rc:${chColor(c.slug)}">${esc(S.ch[c.slug].channel?.title || c.name)}</span>`).join("")}</div>
+    ${agendaHtml(upcoming, colors, chans[0])}<div class="note">Цвет полоски — канал. Месяц целиком — вкладка «Календарь» вверху.</div></section>
   <section><h2>Аудитория · ${N} дней</h2><div class="tiles">
     ${kpiTile("Подписчики, всего", fmt(chans.reduce((s, c) => s + (c.channel?.subscribers || 0), 0)), `<span class="up">+${fmt(T("subscribersGained") - T("subscribersLost"))}</span> <span class="muted">за ${N} д</span>`)}
     ${(() => { const sp = chans.reduce((a, c) => { const x = subsSplit(c, range(c, N)); return { long: a.long + x.long, short: a.short + x.short }; }, { long: 0, short: 0 }), all = sp.long + sp.short;
@@ -1036,14 +1041,15 @@ function renderSummary(m) {
   <section class="grid g2">
     <div class="card"><h2>Выбросы — кандидаты на продолжение</h2>${allOut.length ? `<div class="alerts">${allOut.map(o => `<div class="alert good" data-video="${esc(o.id)}" data-ch="${esc(o.ch.slug)}" style="cursor:pointer"><span class="ic">★</span><div><b>×${o.ratio.toFixed(1)} к медиане · ${esc(o.ch.channel?.title || o.ch.name)}</b><div class="small ink2">${esc(o.v.title)} — за ${o.win}</div></div></div>`).join("")}</div>` : `<div class="empty">Пока нет роликов в 2+ раза выше медианы канала</div>`}</div>
     <div class="card"><h2>Тревоги по всем каналам</h2>${alertsHtml(allAlerts, null)}</div>
-  </section>
-  <section class="card"><h2>Ближайшие выходы по всем каналам</h2>${agendaHtml(upcoming, colors, chans[0])}</section>`;
+  </section>`;
 }
 
 // ---------------------------------------------------------------- events
 document.addEventListener("click", e => {
   const tab = e.target.closest("[data-tab]");
   if (tab) { S.tab = tab.dataset.tab; renderShell(); return; }
+  const cc = e.target.closest("[data-calch]");
+  if (cc) { const k = cc.dataset.calch; S.calHide.has(k) ? S.calHide.delete(k) : S.calHide.add(k); render(); return; }
   const per = e.target.closest("#period button");
   if (per) { S.period = +per.dataset.d; renderShell(); return; }
   const vf = e.target.closest("#vf button");
