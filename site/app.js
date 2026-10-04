@@ -61,10 +61,9 @@ const fmtDate = (iso, withTime = true) => {
 function delta(cur, prev, invert = false) {
   if (cur == null || prev == null || !prev) return `<span class="muted">нет базы для сравнения</span>`;
   const ch = (cur - prev) / Math.abs(prev) * 100;
-  if (Math.abs(ch) < 0.5) return `<span class="muted">• без изменений</span>`;
+  if (Math.abs(ch) < 0.5) return `<span class="delta flat">≈ 0%</span> <span class="muted">к прошлому периоду</span>`;
   const good = invert ? ch < 0 : ch > 0;
-  const arrow = ch > 0 ? "▲" : ch < 0 ? "▼" : "•";
-  return `<span class="${Math.abs(ch) < 0.5 ? "muted" : good ? "up" : "down"}">${arrow} ${pct(Math.abs(ch), 0)}</span> <span class="muted">к прошлому периоду</span>`;
+  return `<span class="delta ${good ? "up" : "down"}">${ch > 0 ? "↑" : "↓"} ${pct(Math.abs(ch), 0)}</span> <span class="muted">к прошлому периоду</span>`;
 }
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
@@ -306,13 +305,14 @@ function alertsHtml(list, chSlug) {
 function killCharts() { S.charts.forEach(c => c.destroy()); S.charts = []; }
 function chartBase() {
   const grid = css("--grid"), muted = css("--muted"), ink = css("--ink");
+  if (window.Chart) { Chart.defaults.font.family = css("--font"); Chart.defaults.font.size = 11; }
   return {
     responsive: true, maintainAspectRatio: false, animation: false,
     interaction: { mode: "index", intersect: false },
-    plugins: { legend: { display: false }, tooltip: { backgroundColor: css("--surface"), titleColor: ink, bodyColor: ink, borderColor: css("--axis"), borderWidth: 1, padding: 10, boxPadding: 4, usePointStyle: true } },
+    plugins: { legend: { display: false }, tooltip: { backgroundColor: css("--surface"), titleColor: muted, bodyColor: ink, borderColor: css("--axis"), borderWidth: 1, padding: 12, boxPadding: 5, cornerRadius: 10, usePointStyle: true, titleFont: { weight: "500" }, bodyFont: { weight: "600" } } },
     scales: {
-      x: { grid: { display: false }, border: { color: css("--axis") }, ticks: { color: muted, maxRotation: 0, autoSkipPadding: 14, font: { size: 11 } } },
-      y: { grid: { color: grid }, border: { display: false }, ticks: { color: muted, font: { size: 11 }, callback: v => fmt(v) }, beginAtZero: true },
+      x: { grid: { display: false }, border: { display: false }, ticks: { color: muted, maxRotation: 0, autoSkipPadding: 18, padding: 6 } },
+      y: { grid: { color: grid, drawTicks: false }, border: { display: false }, ticks: { color: muted, padding: 8, maxTicksLimit: 5, callback: v => fmt(v) }, beginAtZero: true },
     },
   };
 }
@@ -320,13 +320,20 @@ function lineChart(el, labels, series, yfmt) {
   if (!window.Chart || !el) return;
   const opt = chartBase();
   if (yfmt) { opt.scales.y.ticks.callback = yfmt; opt.plugins.tooltip.callbacks = { label: c => `${c.dataset.label}: ${yfmt(c.parsed.y)}` }; }
-  S.charts.push(new Chart(el, { type: "line", data: { labels, datasets: series.map(s => ({ label: s.label, data: s.data, borderColor: s.color, backgroundColor: s.color, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0, spanGaps: true, borderDash: s.dash || [] })) }, options: opt }));
+  const fill = color => c => {  // soft vertical gradient under the line
+    const { chartArea, ctx } = c.chart;
+    if (!chartArea) return "transparent";
+    const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+    g.addColorStop(0, color + (series.length > 1 ? "26" : "38")); g.addColorStop(1, color + "00");
+    return g;
+  };
+  S.charts.push(new Chart(el, { type: "line", data: { labels, datasets: series.map(s => ({ label: s.label, data: s.data, borderColor: s.color, backgroundColor: fill(s.color), fill: s.dash ? false : "origin", borderWidth: 2, pointRadius: 0, pointHoverRadius: 5, pointHoverBorderWidth: 2, pointHoverBorderColor: css("--surface"), pointBackgroundColor: s.color, tension: 0.25, spanGaps: true, borderDash: s.dash || [] })) }, options: opt }));
 }
 function barChart(el, labels, series, stacked = false) {
   if (!window.Chart || !el) return;
   const opt = chartBase();
   if (stacked) { opt.scales.x.stacked = true; opt.scales.y.stacked = true; }
-  S.charts.push(new Chart(el, { type: "bar", data: { labels, datasets: series.map(s => ({ label: s.label, data: s.data, backgroundColor: s.colors || s.color, borderRadius: 4, borderSkipped: "start", maxBarThickness: 18, borderColor: css("--surface"), borderWidth: stacked ? { top: 2 } : 0 })) }, options: opt }));
+  S.charts.push(new Chart(el, { type: "bar", data: { labels, datasets: series.map(s => ({ label: s.label, data: s.data, backgroundColor: s.colors || s.color, borderRadius: 6, borderSkipped: "start", maxBarThickness: 16, categoryPercentage: 0.7, borderColor: css("--surface"), borderWidth: stacked ? { top: 2 } : 0 })) }, options: opt }));
 }
 const legend = items => `<div class="legend">${items.map(([c, t, dash]) => `<span><i style="background:${dash ? `repeating-linear-gradient(90deg,${c} 0 4px,transparent 4px 7px)` : c}"></i>${t}</span>`).join("")}</div>`;
 const shortLabel = d => new Date(d + "T00:00:00Z").toLocaleDateString("ru-RU", { day: "numeric", month: "short", timeZone: "UTC" });
@@ -372,7 +379,43 @@ function render() {
 }
 
 // ---------------------------------------------------------------- tab: overview (one channel)
-function kpiTile(k, v, d, title = "") { return `<div class="tile" title="${esc(title)}"><div class="k">${k}</div><div class="v num">${v}</div><div class="d">${d}</div></div>`; }
+function kpiTile(k, v, d, title = "", spark = null, color = "var(--s1)") {
+  return `<div class="tile" title="${esc(title)}"><div class="k">${k}</div><div class="v num">${v}</div><div class="d">${d}</div>${spark ? sparkline(spark, color) : ""}</div>`;
+}
+let sparkId = 0;
+function sparkline(vals, color) {  // tiny trend under a stat tile: area + 2px line, no axes (decorative; the number above is the data)
+  const xs = vals.map(v => (v == null || !isFinite(v) ? 0 : v));
+  if (xs.length < 2 || !xs.some(v => v)) return "";
+  const W = 200, H = 34, max = Math.max(...xs), lo = Math.min(...xs), min = lo < 0 ? lo : Math.max(0, lo - (max - lo) * 0.35), rng = max - min || 1;
+  const pts = xs.map((v, i) => [i / (xs.length - 1) * W, H - 3 - (v - min) / rng * (H - 8)]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join("");
+  const id = "sg" + (++sparkId);
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".22"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs><path d="${line}L${W} ${H}L0 ${H}Z" fill="url(#${id})"/><path d="${line}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+}
+function series(ch, key, field, rg) {  // daily values over a range (missing days = 0)
+  const mp = Object.fromEntries(daily(ch, key).map(r => [r.day, r]));
+  const out = [];
+  for (let d = rg[0]; d <= rg[1]; d = addDays(d, 1)) out.push(typeof field === "function" ? field(mp[d]) : (mp[d]?.[field] ?? 0));
+  return out;
+}
+function sumSeries(chans, field, N) {
+  const all = chans.map(c => series(c, "all", field, range(c, N)));
+  return all.length ? all[0].map((_, i) => all.reduce((a, x) => a + (x[i] || 0), 0)) : null;
+}
+function reachSeries(ch, rg) {
+  const imp = {};
+  for (const v of Object.values(ch.videos || {})) for (const [d, [i]] of Object.entries(v.reach || {})) imp[d] = (imp[d] || 0) + i;
+  const out = [];
+  for (let d = rg[0]; d <= rg[1]; d = addDays(d, 1)) out.push(imp[d] || 0);
+  return out;
+}
+function scaleBar(v, t) {  // where the value sits between weak / norm / good / strong
+  if (v == null || !isFinite(v) || !t) return "";
+  const top = Math.max((t[2] ?? t[1] * 1.6) * 1.25, v * 1.08);
+  const edges = [0, t[0], t[1], t[2] ?? top, top].map(x => Math.min(x, top));
+  const zones = ["weak", "norm", "good", "strong"].map((z, i) => [z, edges[i + 1] - edges[i]]).filter(([, w]) => w > 0);
+  return `<div class="scale" aria-hidden="true">${zones.map(([z, w]) => `<i class="z-${z}" style="flex:${w}"></i>`).join("")}<b style="left:${Math.min(99, v / top * 100).toFixed(1)}%"></b></div>`;
+}
 function renderOverview(m, ch) {
   const N = S.period, cur = range(ch, N), prev = range(ch, N, 1);
   const t = totals(ch, "all", cur), p = totals(ch, "all", prev);
@@ -388,12 +431,12 @@ function renderOverview(m, ch) {
   <section><h2>Конверсии · ${N} д</h2><div class="tiles">${convTiles(ch, cur, prev)}</div>
     <div class="note">Конверсии считаются на engaged-просмотры (так их считает YouTube после 24.08.2026). Подробные шаги — в воронках ниже, по каждому ролику — во вкладке «Ролики». Наведите на плитку — источник нормы.</div></section>
   <section><h2>Канал · ${N} д</h2><div class="tiles">
-    ${kpiTile("Подписчики", fmt(ch.channel?.subscribers), `<span class="${net >= 0 ? "up" : "down"}">${net >= 0 ? "+" : ""}${fmt(net)}</span> <span class="muted">за ${N} д (+${fmt(t.subscribersGained)} / −${fmt(t.subscribersLost)})</span>`)}
+    ${kpiTile("Подписчики", fmt(ch.channel?.subscribers), `<span class="${net >= 0 ? "up" : "down"}">${net >= 0 ? "+" : ""}${fmt(net)}</span> <span class="muted">за ${N} д (+${fmt(t.subscribersGained)} / −${fmt(t.subscribersLost)})</span>`, "", series(ch, "all", r => (r?.subscribersGained || 0) - (r?.subscribersLost || 0), cur), "var(--s3)")}
     ${(() => { const sp = subsSplit(ch, cur), all = sp.long + sp.short; return kpiTile("Подписки: ролики / Shorts", `${fmt(sp.long)} / ${fmt(sp.short)}`, all ? `${pct(sp.short / all * 100, 0)} — из Shorts (такие подписчики реже смотрят длинные ролики)` : "нет новых подписок за период"); })()}
-    ${kpiTile("Просмотры", fmt(t.views), delta(t.views, p.views), "С 24.08.2026 YouTube считает просмотр с первого кадра")}
-    ${kpiTile("Engaged-просмотры", fmt(t.engagedViews), engShare != null ? `${pct(engShare, 0)} от всех · ${delta(t.engagedViews, p.engagedViews).replace(" к прошлому периоду", "")}` : "—", "По ним YouTube считает удержание, CTR и доход")}
-    ${kpiTile("Часы просмотра", fmt(hours(t.estimatedMinutesWatched)), delta(t.estimatedMinutesWatched, p.estimatedMinutesWatched))}
-    ${kpiTile("Показы превью", fmt(r?.impr), r ? delta(r.impr, rp?.impr) : `<span class="muted">Reporting API: первые данные через ~2 дня</span>`)}
+    ${kpiTile("Просмотры", fmt(t.views), delta(t.views, p.views), "С 24.08.2026 YouTube считает просмотр с первого кадра", series(ch, "all", "views", cur))}
+    ${kpiTile("Engaged-просмотры", fmt(t.engagedViews), engShare != null ? `${pct(engShare, 0)} от всех · ${delta(t.engagedViews, p.engagedViews).replace(" к прошлому периоду", "")}` : "—", "По ним YouTube считает удержание, CTR и доход", series(ch, "all", "engagedViews", cur), "var(--s7)")}
+    ${kpiTile("Часы просмотра", fmt(hours(t.estimatedMinutesWatched)), delta(t.estimatedMinutesWatched, p.estimatedMinutesWatched), "", series(ch, "all", r => (r?.estimatedMinutesWatched || 0) / 60, cur), "var(--s2)")}
+    ${kpiTile("Показы превью", fmt(r?.impr), r ? delta(r.impr, rp?.impr) : `<span class="muted">Reporting API: первые данные через ~2 дня</span>`, "", reachSeries(ch, cur), "var(--s5)")}
     ${kpiTile("Ср. время просмотра (ролики)", dur(longAvd), tl.views ? `на ${fmt(tl.views)} просмотрах роликов` : "—")}
     ${kpiTile("Доход", rv?.rev != null ? money(rv.rev) : "—", rv?.rev != null ? `RPM ${money(rpm)} · ${delta(rv.rev, rvp?.rev).replace(" к прошлому периоду", "")}` : `<span class="muted">до монетизации — см. вкладку «Монетизация»</span>`)}
   </div></section>
@@ -448,18 +491,18 @@ function convTiles(ch, cur, prev) {
   const L = totals(ch, "VIDEO_ON_DEMAND", cur), Lp = totals(ch, "VIDEO_ON_DEMAND", prev);
   const Sh = totals(ch, "SHORTS", cur), Shp = totals(ch, "SHORTS", prev);
   const rate = (a, b) => (a != null && b ? a / b * 100 : null);
-  const tile = (k, v, l, d, src) => `<div class="tile" title="${esc(src)}"><div class="k">${k}</div><div class="v num" style="display:flex;gap:4px 8px;align-items:center;flex-wrap:wrap;white-space:normal">${v}${badge(l)}</div><div class="d">${d}</div></div>`;
+  const tile = (k, v, l, d, src, raw, t) => `<div class="tile" title="${esc(src)}"><div class="k">${k}</div><div class="v num" style="display:flex;gap:4px 8px;align-items:center;flex-wrap:wrap;white-space:normal">${v}${badge(l)}</div><div class="d">${d}</div>${l !== "na" ? scaleBar(raw, t) : ""}</div>`;
   const ctr = r?.ctr, sl = rate(L.subscribersGained, L.engagedViews), ss = rate(Sh.subscribersGained, Sh.engagedViews), stay = rate(Sh.engagedViews, Sh.views);
   const dl = (c, p) => (c != null && p != null ? delta(c, p).replace(" к прошлому периоду", "") : "");
   return [
-    tile("Показ → просмотр (CTR, ролики)", pct(ctr), r && r.impr >= 1000 ? level(NORMS.long.ctr.t, ctr) : "na", r ? `${fmt(r.impr)} показов → ${fmt(r.clicks)} просмотров ${dl(ctr, rp?.ctr)}` : "показы приходят с задержкой ~2 дня", NORMS.long.ctr.src + " · норма 3–6%"),
-    tile("Лента Shorts → смотрят", pct(stay, 0), Sh.views >= 300 ? level(NORMS.short.stay.t, stay) : "na", Sh.views ? `${fmt(Sh.engagedViews)} из ${fmt(Sh.views)} не пролистали ${dl(stay, rate(Shp.engagedViews, Shp.views))}` : "нет просмотров Shorts", NORMS.short.stay.src + " · норма 65–75%"),
-    tile("Просмотр → подписка (ролики)", pct(sl, 2), L.engagedViews >= 300 ? level(NORMS.long.sub.t, sl) : "na", L.engagedViews ? `+${fmt(L.subscribersGained)} на ${fmt(L.engagedViews)} engaged ${dl(sl, rate(Lp.subscribersGained, Lp.engagedViews))}` : "нет просмотров роликов", NORMS.long.sub.src + " · норма 0,2–1%"),
-    tile("Просмотр → подписка (Shorts)", pct(ss, 2), Sh.engagedViews >= 300 ? level(NORMS.short.sub.t, ss) : "na", Sh.engagedViews ? `+${fmt(Sh.subscribersGained)} на ${fmt(Sh.engagedViews)} engaged ${dl(ss, rate(Shp.subscribersGained, Shp.engagedViews))}` : "нет просмотров Shorts", NORMS.short.sub.src + " · норма 0,1–0,5%"),
+    tile("Показ → просмотр (CTR, ролики)", pct(ctr), r && r.impr >= 1000 ? level(NORMS.long.ctr.t, ctr) : "na", r ? `${fmt(r.impr)} показов → ${fmt(r.clicks)} просмотров ${dl(ctr, rp?.ctr)}` : "показы приходят с задержкой ~2 дня", NORMS.long.ctr.src + " · норма 3–6%", ctr, NORMS.long.ctr.t),
+    tile("Лента Shorts → смотрят", pct(stay, 0), Sh.views >= 300 ? level(NORMS.short.stay.t, stay) : "na", Sh.views ? `${fmt(Sh.engagedViews)} из ${fmt(Sh.views)} не пролистали ${dl(stay, rate(Shp.engagedViews, Shp.views))}` : "нет просмотров Shorts", NORMS.short.stay.src + " · норма 65–75%", stay, NORMS.short.stay.t),
+    tile("Просмотр → подписка (ролики)", pct(sl, 2), L.engagedViews >= 300 ? level(NORMS.long.sub.t, sl) : "na", L.engagedViews ? `+${fmt(L.subscribersGained)} на ${fmt(L.engagedViews)} engaged ${dl(sl, rate(Lp.subscribersGained, Lp.engagedViews))}` : "нет просмотров роликов", NORMS.long.sub.src + " · норма 0,2–1%", sl, NORMS.long.sub.t),
+    tile("Просмотр → подписка (Shorts)", pct(ss, 2), Sh.engagedViews >= 300 ? level(NORMS.short.sub.t, ss) : "na", Sh.engagedViews ? `+${fmt(Sh.subscribersGained)} на ${fmt(Sh.engagedViews)} engaged ${dl(ss, rate(Shp.subscribersGained, Shp.engagedViews))}` : "нет просмотров Shorts", NORMS.short.sub.src + " · норма 0,1–0,5%", ss, NORMS.short.sub.t),
   ].join("");
 }
-function fstep(label, sub, val, lvl, title = "") {
-  return `<div class="fstep" title="${esc(title)}"><div class="lbl"><b>${label}</b><span>${sub}</span></div><div class="val">${val}</div><div>${badge(lvl)}</div></div>`;
+function fstep(label, sub, val, lvl, title = "", raw = null, t = null) {
+  return `<div class="fstep" title="${esc(title)}"><div class="lbl"><b>${label}</b><span>${sub}</span></div><div class="val">${val}</div><div>${badge(lvl)}</div>${lvl !== "na" ? scaleBar(raw, t) : ""}</div>`;
 }
 function funnelLong(ch, rg) {
   const t = totals(ch, "VIDEO_ON_DEMAND", rg);
@@ -471,12 +514,12 @@ function funnelLong(ch, rg) {
   const N = NORMS.long;
   if (!t.views && !r) return `<div class="empty">Нет данных по роликам за период</div>`;
   return `<div class="funnel">
-    ${fstep("Показ → клик (CTR)", r ? `${fmt(r.impr)} показов → ${fmt(r.clicks)} кликов` : "Reporting API — данные с задержкой ~2 дня", pct(r?.ctr), r && r.impr >= 1000 ? level(N.ctr.t, r.ctr) : "na", N.ctr.src)}
-    ${fstep("Досмотр до 0:30", "медиана роликов за 90 дней", pct(ret, 0), level(N.ret30.t, ret), N.ret30.src)}
-    ${fstep("Средний % просмотра", "медиана роликов за 90 дней", pct(apvMed, 0), level(N.apv.t, apvMed), N.apv.src)}
-    ${fstep("Просмотр → лайк", `${fmt(t.likes)} лайков на engaged`, pct(per("likes"), 2), level(N.like.t, per("likes")), N.like.src)}
-    ${fstep("Просмотр → комментарий", `${fmt(t.comments)} комментариев`, pct(per("comments"), 2), level(N.comment.t, per("comments")), N.comment.src)}
-    ${fstep("Просмотр → подписка", `+${fmt(t.subscribersGained)} подписчиков с роликов`, pct(per("subscribersGained"), 2), level(N.sub.t, per("subscribersGained")), N.sub.src)}
+    ${fstep("Показ → клик (CTR)", r ? `${fmt(r.impr)} показов → ${fmt(r.clicks)} кликов` : "Reporting API — данные с задержкой ~2 дня", pct(r?.ctr), r && r.impr >= 1000 ? level(N.ctr.t, r.ctr) : "na", N.ctr.src, r?.ctr, N.ctr.t)}
+    ${fstep("Досмотр до 0:30", "медиана роликов за 90 дней", pct(ret, 0), level(N.ret30.t, ret), N.ret30.src, ret, N.ret30.t)}
+    ${fstep("Средний % просмотра", "медиана роликов за 90 дней", pct(apvMed, 0), level(N.apv.t, apvMed), N.apv.src, apvMed, N.apv.t)}
+    ${fstep("Просмотр → лайк", `${fmt(t.likes)} лайков на engaged`, pct(per("likes"), 2), level(N.like.t, per("likes")), N.like.src, per("likes"), N.like.t)}
+    ${fstep("Просмотр → комментарий", `${fmt(t.comments)} комментариев`, pct(per("comments"), 2), level(N.comment.t, per("comments")), N.comment.src, per("comments"), N.comment.t)}
+    ${fstep("Просмотр → подписка", `+${fmt(t.subscribersGained)} подписчиков с роликов`, pct(per("subscribersGained"), 2), level(N.sub.t, per("subscribersGained")), N.sub.src, per("subscribersGained"), N.sub.t)}
   </div><div class="note">Конверсии — на engaged-просмотры. ${vids.length} роликов вышло за период. Наведите на шаг — источник нормы.</div>`;
 }
 function funnelShort(ch, rg) {
@@ -490,11 +533,11 @@ function funnelShort(ch, rg) {
   const apvLvl = recent.length ? level(shortApvNorm(median(recent.map(x => x.v.duration))), apvMed) : "na";
   const cs = (t.comments ?? 0) + (t.shares ?? 0);
   return `<div class="funnel">
-    ${fstep("Смотрят, а не листают", `${fmt(t.engagedViews)} engaged из ${fmt(t.views)}`, pct(stay, 0), level(N.stay.t, stay), N.stay.src)}
-    ${fstep("Средний % просмотра", "медиана Shorts за 90 дней (>100% = пересмотры)", pct(apvMed, 0), apvLvl, "B: <20 с — 100%, 20–40 с — 90%, >40 с — 80%")}
-    ${fstep("Просмотр → лайк", `${fmt(t.likes)} лайков`, pct(per("likes"), 2), level(N.like.t, per("likes")), N.like.src)}
-    ${fstep("Комментарии + репосты", `${fmt(cs)} всего`, pct(t.engagedViews ? cs / t.engagedViews * 100 : null, 2), level(N.comment.t, t.engagedViews ? cs / t.engagedViews * 100 : null), N.comment.src)}
-    ${fstep("Просмотр → подписка", `+${fmt(t.subscribersGained)} подписчиков с Shorts`, pct(per("subscribersGained"), 2), level(N.sub.t, per("subscribersGained")), N.sub.src)}
+    ${fstep("Смотрят, а не листают", `${fmt(t.engagedViews)} engaged из ${fmt(t.views)}`, pct(stay, 0), level(N.stay.t, stay), N.stay.src, stay, N.stay.t)}
+    ${fstep("Средний % просмотра", "медиана Shorts за 90 дней (>100% = пересмотры)", pct(apvMed, 0), apvLvl, "B: <20 с — 100%, 20–40 с — 90%, >40 с — 80%", apvMed, recent.length ? shortApvNorm(median(recent.map(x => x.v.duration))) : null)}
+    ${fstep("Просмотр → лайк", `${fmt(t.likes)} лайков`, pct(per("likes"), 2), level(N.like.t, per("likes")), N.like.src, per("likes"), N.like.t)}
+    ${fstep("Комментарии + репосты", `${fmt(cs)} всего`, pct(t.engagedViews ? cs / t.engagedViews * 100 : null, 2), level(N.comment.t, t.engagedViews ? cs / t.engagedViews * 100 : null), N.comment.src, t.engagedViews ? cs / t.engagedViews * 100 : null, N.comment.t)}
+    ${fstep("Просмотр → подписка", `+${fmt(t.subscribersGained)} подписчиков с Shorts`, pct(per("subscribersGained"), 2), level(N.sub.t, per("subscribersGained")), N.sub.src, per("subscribersGained"), N.sub.t)}
   </div><div class="note">«Смотрят vs листают» в API нет — показана близкая метрика: доля engaged-просмотров.</div>`;
 }
 
@@ -669,7 +712,7 @@ function openVideo(slug, id) {
     opt.scales.y.ticks.callback = val => val + "%";
     opt.plugins.tooltip.callbacks = { label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(0)}%` };
     S.drawerCharts.push(new Chart($("#dRet"), { type: "line", data: { labels: lbl, datasets: [
-      { label: "Смотрят", data: v.retention.map(r => +(r[1] * 100).toFixed(1)), borderColor: css("--s1"), backgroundColor: css("--s1"), borderWidth: 2, pointRadius: 0, tension: 0 },
+      { label: "Смотрят", data: v.retention.map(r => +(r[1] * 100).toFixed(1)), borderColor: css("--s1"), backgroundColor: css("--s1") + "26", fill: "origin", borderWidth: 2, pointRadius: 0, tension: 0.2 },
     ] }, options: opt }));
   }
   if (v.daily && window.Chart) {
@@ -904,7 +947,7 @@ function renderCosts(m, ch) {
   const N = S.period, rg = ch ? range(ch, N) : [addDays(dayStr(new Date()), -N + 1), dayStr(new Date())];
   m.innerHTML = `
   <section class="tiles">
-    ${kpiTile("Баланс Higgsfield, кр.", bal ? fmt(bal[1], 0) : "—", bal ? `на ${fmtDate(bal[0])}${ch?.costs?.hf_plan ? " · план " + esc(ch.costs.hf_plan) : ""}` : "нет снимков")}
+    ${kpiTile("Баланс Higgsfield, кр.", bal ? fmt(bal[1], 0) : "—", bal ? `на ${fmtDate(bal[0])}${ch?.costs?.hf_plan ? " · план " + esc(ch.costs.hf_plan) : ""}` : "нет снимков", "", h.slice(-30).map(x => x[1]), "var(--s3)")}
     ${kpiTile("Хватит на, роликов", rw ? `≈ ${rw.n}` : "—", rw?.until ? `по календарю — до ${fmtDate(rw.until.length > 10 ? rw.until : rw.until + "T12:00", false)}` : pv ? "" : "нужна история затрат")}
     ${kpiTile("Себестоимость ролика, кр.", pv ? fmt(pv, 0) : "—", pv ? (usd(pv) != null ? money(usd(pv)) + " · медиана, ролик + 3 Shorts" : "медиана, ролик + 3 Shorts") : "")}
     ${kpiTile(`Потрачено за ${N} д, кр.`, hfSpent(...rg) != null ? fmt(hfSpent(...rg), 0) : "—", "по снимкам баланса")}
@@ -1002,8 +1045,8 @@ function renderSummary(m) {
     ${kpiTile("Выпуск по плану", planned ? `${done} из ${planned}` : `${done}`, "роликов вышло / должно было выйти за период")}
   </div></section>
   <section class="grid g2">
-    <div class="card"><h2>Производство сейчас</h2><div class="hbars">${[["in_production", st("in_production")], ["ready", st("ready")], ["scheduled", st("scheduled")], ["failed", st("failed")], ["planned", st("planned")]].map(([k, n]) =>
-      `<div class="hbar"><span class="t"><span class="st st-${k}">${STATUS[k]}</span></span><span class="x" style="text-align:left">${n}</span><span></span></div>`).join("")}</div>
+    <div class="card"><h2>Производство сейчас</h2><div class="mstats">${[["in_production", st("in_production")], ["ready", st("ready")], ["scheduled", st("scheduled")], ["failed", st("failed")], ["planned", st("planned")]].map(([k, n]) =>
+      `<div class="mstat ${n ? "" : "zero"}"><b>${n}</b><span class="st st-${k}">${STATUS[k]}</span></div>`).join("")}</div>
       ${(() => { const L = chans.flatMap(leadStats); const ml = median(L.map(x => x.lead)), ma = median(L.map(x => x.approve)), mr = median(L.map(x => x.rounds));
         return `<div class="small ink2" style="margin-top:10px">От темы до выхода: <b>${ml != null ? fmt(ml, 1) + " дн." : "—"}</b> (медиана) · проверка до «Ок»: <b>${ma != null ? fmt(ma, 1) + " ч" : "—"}</b> · кругов проверки: <b>${mr != null ? fmt(mr, 1) : "—"}</b></div>`; })()}
       <h2 style="margin-top:16px">Ждут твоего «Ок»</h2>${waitingHtml(chans.flatMap(waitingOk))}</div>
@@ -1021,9 +1064,9 @@ function renderSummary(m) {
     ${kpiTile("Подписчики, всего", fmt(chans.reduce((s, c) => s + (c.channel?.subscribers || 0), 0)), `<span class="up">+${fmt(T("subscribersGained") - T("subscribersLost"))}</span> <span class="muted">за ${N} д</span>`)}
     ${(() => { const sp = chans.reduce((a, c) => { const x = subsSplit(c, range(c, N)); return { long: a.long + x.long, short: a.short + x.short }; }, { long: 0, short: 0 }), all = sp.long + sp.short;
       return kpiTile("Подписки: ролики / Shorts", `${fmt(sp.long)} / ${fmt(sp.short)}`, all ? `${pct(sp.short / all * 100, 0)} — из Shorts` : "нет новых подписок"); })()}
-    ${kpiTile("Просмотры", fmt(T("views")), delta(T("views"), P("views")))}
-    ${kpiTile("Engaged-просмотры", fmt(T("engagedViews")), delta(T("engagedViews"), P("engagedViews")))}
-    ${kpiTile("Часы просмотра", fmt(T("estimatedMinutesWatched") / 60), delta(T("estimatedMinutesWatched"), P("estimatedMinutesWatched")))}
+    ${kpiTile("Просмотры", fmt(T("views")), delta(T("views"), P("views")), "", sumSeries(chans, "views", N))}
+    ${kpiTile("Engaged-просмотры", fmt(T("engagedViews")), delta(T("engagedViews"), P("engagedViews")), "", sumSeries(chans, "engagedViews", N), "var(--s7)")}
+    ${kpiTile("Часы просмотра", fmt(T("estimatedMinutesWatched") / 60), delta(T("estimatedMinutesWatched"), P("estimatedMinutesWatched")), "", sumSeries(chans, r => (r?.estimatedMinutesWatched || 0) / 60, N), "var(--s2)")}
     ${kpiTile("Доход", rev ? money(rev) : "—", rev ? "сумма по каналам" : "пока ни один канал не монетизирован")}
     ${kpiTile("Вышло за период", `${rows.reduce((s, r) => s + r.longs, 0)} + ${rows.reduce((s, r) => s + r.shorts, 0)}`, "роликов + Shorts")}
   </div></section>
