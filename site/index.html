@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>YouTube-пульт</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232a78d6'/><path d='M8 22V14M14 22V9M20 22V17M26 22V12' stroke='white' stroke-width='3' stroke-linecap='round'/></svg>">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<div id="lock" class="lock hidden">
+  <form id="lockform" autocomplete="on">
+    <div style="font-weight:650;font-size:17px">YouTube-пульт</div>
+    <div class="muted small">Данные зашифрованы. Введите пароль дашборда — он сохранится на этом устройстве.</div>
+    <input type="text" name="username" value="yt-dashboard" autocomplete="username" hidden>
+    <input id="pw" type="password" autocomplete="current-password" placeholder="Пароль" required>
+    <div id="pwerr" class="err hidden">Пароль не подходит</div>
+    <button type="submit">Открыть</button>
+  </form>
+</div>
+<div id="app" class="hidden">
+  <div id="demo" class="demo-banner hidden">Демо-данные: так дашборд будет выглядеть, когда подключится YouTube API. Цифры выдуманы.</div>
+  <header class="top">
+    <div class="bar">
+      <span class="brand">YouTube-пульт</span>
+      <select id="channel" class="ctl" aria-label="Канал"></select>
+      <div class="seg" id="period" role="group" aria-label="Период">
+        <button data-d="7">7 д</button><button data-d="28" aria-pressed="true">28 д</button><button data-d="90">90 д</button><button data-d="365">год</button>
+      </div>
+      <span class="spacer"></span>
+      <span class="fresh" id="fresh"></span>
+      <button class="ctl" id="theme" title="Тема" aria-label="Переключить тему">◐</button>
+    </div>
+    <nav class="tabs" id="tabs" role="tablist"></nav>
+  </header>
+  <main id="main"></main>
+</div>
+<div id="drawer" class="drawer hidden"><div class="panel" id="panel"></div></div>
+</body>
+</html>

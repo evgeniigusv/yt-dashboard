@@ -1,0 +1,859 @@
+/* YouTube-пульт: decrypts data/<slug>.enc (written by collector/collect.py) and renders the dashboard. */
+"use strict";
+
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const DEMO = new URLSearchParams(location.search).has("demo");
+const BASE = DEMO ? "demo/" : "data/";
+const PW_KEY = "ytdash.pw";
+const S = { index: null, ch: {}, view: null, tab: null, period: 28, charts: [], vfilter: "all", vsort: ["published", -1], calMonth: null };
+
+// ---------------------------------------------------------------- storage (per-device conveniences only)
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
+};
+
+// ---------------------------------------------------------------- crypto (mirror of collector/crypto.py)
+async function decrypt(text, pw) {
+  const env = JSON.parse(text);
+  const b = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt: b(env.salt), iterations: env.iter, hash: "SHA-256" },
+    base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b(env.iv) }, key, b(env.ct));
+  const stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return JSON.parse(await new Response(stream).text());
+}
+
+async function fetchText(path) {
+  const r = await fetch(BASE + path + "?t=" + Date.now(), { cache: "no-store" });
+  if (!r.ok) throw new Error(r.status);
+  return r.text();
+}
+
+// ---------------------------------------------------------------- formatting
+const nf = new Intl.NumberFormat("ru-RU");
+function fmt(n, d = 0) {
+  if (n == null || !isFinite(n)) return "—";
+  const a = Math.abs(n);
+  if (a >= 1e6) return (n / 1e6).toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " млн";
+  if (a >= 1e4) return (n / 1e3).toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " тыс.";
+  return n.toLocaleString("ru-RU", { maximumFractionDigits: d });
+}
+const pct = (n, d = 1) => (n == null || !isFinite(n) ? "—" : n.toLocaleString("ru-RU", { maximumFractionDigits: d, minimumFractionDigits: n < 10 && d ? 1 : 0 }) + "%");
+const money = n => (n == null || !isFinite(n) ? "—" : "$" + n.toLocaleString("ru-RU", { maximumFractionDigits: n < 100 ? 2 : 0 }));
+function dur(sec) {
+  if (sec == null || !isFinite(sec)) return "—";
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
+const hours = min => (min == null ? null : min / 60);
+const dayStr = d => d.toISOString().slice(0, 10);
+const addDays = (s, n) => { const d = new Date(s + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return dayStr(d); };
+const daysBetween = (a, b) => Math.round((new Date(b + "T00:00:00Z") - new Date(a + "T00:00:00Z")) / 864e5);
+const fmtDate = (iso, withTime = true) => {
+  const d = new Date(iso);
+  return d.toLocaleString("ru-RU", withTime ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short" });
+};
+function delta(cur, prev, invert = false) {
+  if (cur == null || prev == null || !prev) return `<span class="muted">нет базы для сравнения</span>`;
+  const ch = (cur - prev) / Math.abs(prev) * 100;
+  if (Math.abs(ch) < 0.5) return `<span class="muted">• без изменений</span>`;
+  const good = invert ? ch < 0 : ch > 0;
+  const arrow = ch > 0 ? "▲" : ch < 0 ? "▼" : "•";
+  return `<span class="${Math.abs(ch) < 0.5 ? "muted" : good ? "up" : "down"}">${arrow} ${pct(Math.abs(ch), 0)}</span> <span class="muted">к прошлому периоду</span>`;
+}
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+// ---------------------------------------------------------------- dictionaries
+const TRAFFIC = {
+  YT_SEARCH: "Поиск YouTube", RELATED_VIDEO: "Рекомендации (рядом с видео)", SUBSCRIBER: "Главная и лента подписок",
+  SHORTS: "Лента Shorts", EXT_URL: "Внешние сайты", NO_LINK_OTHER: "Прямые / неизвестные", NOTIFICATION: "Уведомления",
+  PLAYLIST: "Плейлисты", YT_CHANNEL: "Страница канала", YT_OTHER_PAGE: "Другие страницы YouTube", END_SCREEN: "Конечные заставки",
+  HASHTAGS: "Хэштеги", ANNOTATION: "Подсказки", CAMPAIGN_CARD: "Карточки кампаний", ADVERTISING: "Реклама", PROMOTED: "Продвижение",
+  SHORTS_CONTENT_LINKS: "Ссылка из Shorts на ролик", SOUND_PAGE: "Страницы звуков", YT_PLAYLIST_PAGE: "Страницы плейлистов",
+  NO_LINK_EMBEDDED: "Встроенный плеер", VIDEO_REMIXES: "Ремиксы", LIVE_REDIRECT: "Перенаправление с эфира", PRODUCT_PAGE: "Страницы товаров",
+  IMMERSIVE_LIVE: "Лента эфиров",
+  // Reporting API numeric codes (reach_combined)
+  0: "Прямые / неизвестные", 1: "Реклама", 3: "Главная и лента подписок", 4: "Страница канала", 5: "Поиск YouTube",
+  7: "Рекомендации (рядом с видео)", 8: "Другие страницы YouTube", 9: "Внешние сайты", 11: "Карточки и подсказки", 14: "Плейлисты",
+  17: "Уведомления", 18: "Страницы плейлистов", 20: "Конечные заставки", 24: "Лента Shorts", 26: "Хэштеги", 27: "Страницы звуков",
+  28: "Перенаправление с эфира", 30: "Ремиксы", 32: "Ссылка из Shorts на ролик",
+};
+const DEVICE = { MOBILE: "Телефон", DESKTOP: "Компьютер", TV: "Телевизор", TABLET: "Планшет", GAME_CONSOLE: "Консоль", UNKNOWN_PLATFORM: "Неизвестно" };
+const STATUS = { published: "вышло", scheduled: "в расписании", uploaded: "загружено, приват", ready: "готово, ждёт ОК",
+  in_production: "в работе", planned: "в плане", idea: "идея", failed: "ошибка выгрузки" };
+const AGE = { "age13-17": "13–17", "age18-24": "18–24", "age25-34": "25–34", "age35-44": "35–44", "age45-54": "45–54", "age55-64": "55–64", "age65-": "65+" };
+let regionNames;
+try { regionNames = new Intl.DisplayNames(["ru"], { type: "region" }); } catch { regionNames = null; }
+
+// ---------------------------------------------------------------- norms (research/benchmarks-dashboard.md, 04.10.2026)
+// [weak below, good from, strong from]; between weak and good = норма. null strong = no "сильно" level.
+const NORMS = {
+  long: {
+    ctr: { t: [3, 6, 10], src: "A/B: у половины каналов 2–10%; <3% почти не продвигается" },
+    ret30: { t: [50, 70, 75], src: "B: в среднем теряют ~40% за 30 с; топы держат 75–85%" },
+    apv: { t: [30, 40, 50], src: "A/B: среднее 23,7%, образовательные ~42%" },
+    like: { t: [1, 3, 5], src: "C/B: 1–3% на engaged-просмотр" },
+    comment: { t: [0.05, 0.3, 1], src: "C: 0,05–0,3%" },
+    sub: { t: [0.2, 1, 2], src: "B: в среднем 0,22%, образовательные 1–3%" },
+  },
+  short: {
+    stay: { t: [60, 75, 80], src: "B: «остались смотреть» 70% — порог, 80% — вирусный уровень. Здесь — engaged / все просмотры" },
+    like: { t: [2, 5, null], src: "B/C: норма 3–5%" },
+    sub: { t: [0.1, 0.5, null], src: "B: в среднем 0,17%, кейсы 0,2–0,46%" },
+    comment: { t: [0.2, 0.5, 1], src: "C: комментарии + репосты ≥0,5%" },
+  },
+};
+function shortApvNorm(sec) { return sec < 20 ? [90, 120, null] : sec <= 40 ? [80, 100, null] : [70, 90, null]; }
+function level(t, v) {
+  if (v == null || !isFinite(v)) return "na";
+  if (v < t[0]) return "weak";
+  if (t[2] != null && v >= t[2]) return "strong";
+  if (v >= t[1]) return "good";
+  return "norm";
+}
+const LVL = { weak: "слабо", norm: "норма", good: "хорошо", strong: "сильно", na: "мало данных" };
+const badge = l => `<span class="badge b-${l}">${LVL[l]}</span>`;
+
+// ---------------------------------------------------------------- data shaping
+function objs(r) {
+  if (!r || !r.rows) return [];
+  return r.rows.map(row => Object.fromEntries(r.cols.map((c, i) => [c, row[i]])));
+}
+function daily(ch, key = "all") { return objs(ch.daily && ch.daily[key]); }
+function lastDay(ch) {
+  const d = daily(ch);
+  return d.length ? d[d.length - 1].day : dayStr(new Date());
+}
+function range(ch, days, offset = 0) {
+  const end = addDays(lastDay(ch), -offset * days);
+  return [addDays(end, -(days - 1)), end];
+}
+function sum(rows, k, [from, to]) {
+  let s = 0, any = false;
+  for (const r of rows) if (r.day >= from && r.day <= to && r[k] != null) { s += r[k]; any = true; }
+  return any ? s : null;
+}
+function totals(ch, key, rg) {
+  const rows = daily(ch, key);
+  const t = {};
+  for (const k of ["views", "engagedViews", "estimatedMinutesWatched", "subscribersGained", "subscribersLost", "likes", "comments", "shares"]) t[k] = sum(rows, k, rg);
+  return t;
+}
+function reachTotals(ch, [from, to], fmtFilter) {
+  let impr = 0, clicks = 0, any = false;
+  for (const v of Object.values(ch.videos || {})) {
+    if (fmtFilter && v.format !== fmtFilter) continue;
+    for (const [d, [i, c]] of Object.entries(v.reach || {})) if (d >= from && d <= to) { impr += i; clicks += c; any = true; }
+  }
+  return any ? { impr, clicks, ctr: impr ? clicks / impr * 100 : null } : null;
+}
+function revenue(ch, rg) {
+  const rows = objs(ch.daily && ch.daily.revenue);
+  return rows.length ? { rev: sum(rows, "estimatedRevenue", rg), ad: sum(rows, "estimatedAdRevenue", rg) } : null;
+}
+
+const VM = new WeakMap();
+function vm(v, ch) {
+  if (VM.has(v)) return VM.get(v);
+  const a = v.a || {};
+  const views = a.views ?? v.stats?.viewCount ?? 0;
+  const eng = a.engagedViews || null;
+  const has = !!a.views;  // no analytics yet (fresh video / API lag): show "мало данных", not zeros
+  const per = (x) => (x != null && eng ? x / eng * 100 : null);
+  let impr = 0, clicks = 0;
+  for (const [i, c] of Object.values(v.reach || {})) { impr += i; clicks += c; }
+  let ret30 = null;
+  if (v.retention && v.duration > 45) {
+    const target = 30 / v.duration;
+    let best = null;
+    for (const [r, w] of v.retention) if (best == null || Math.abs(r - target) < Math.abs(best[0] - target)) best = [r, w];
+    if (best) ret30 = best[1] * 100;
+  }
+  const pub = (v.published_at || "").slice(0, 10);
+  const dd = objs(v.daily);
+  const win = n => (dd.length && pub ? sum(dd, "views", [pub, addDays(pub, n - 1)]) : null);
+  const age = pub ? daysBetween(pub, lastDay(ch)) : null;
+  const m = {
+    views, eng, minutes: has ? a.estimatedMinutesWatched : null, avd: has ? a.averageViewDuration : null, apv: has ? a.averageViewPercentage : null,
+    like: per(a.likes), comment: per(a.comments != null ? a.comments + (v.format === "short" ? a.shares || 0 : 0) : null),
+    sub: per(a.subscribersGained), subs: a.subscribersGained ?? null, likes: a.likes ?? v.stats?.likeCount ?? null,
+    comments: a.comments ?? v.stats?.commentCount ?? null, shares: a.shares ?? null,
+    impr: impr || null, ctr: impr >= 1 ? clicks / impr * 100 : null, ret30,
+    stay: eng != null && views ? eng / views * 100 : null,
+    d2: win(2), d7: age >= 7 ? win(7) : null, d28: age >= 28 ? win(28) : null, age,
+    rev: v.rev?.estimatedRevenue ?? null, pub,
+  };
+  VM.set(v, m);
+  return m;
+}
+function publicVideos(ch, fmtFilter) {
+  return Object.entries(ch.videos || {}).filter(([, v]) => v.privacy === "public" && (!fmtFilter || v.format === fmtFilter))
+    .map(([id, v]) => ({ id, v, m: vm(v, ch) }));
+}
+function median(xs) {
+  const a = xs.filter(x => x != null && isFinite(x)).sort((p, q) => p - q);
+  if (!a.length) return null;
+  const k = Math.floor(a.length / 2);
+  return a.length % 2 ? a[k] : (a[k - 1] + a[k]) / 2;
+}
+function quantile(xs, q) {
+  const a = xs.filter(x => x != null && isFinite(x)).sort((p, r) => p - r);
+  if (!a.length) return null;
+  return a[Math.min(a.length - 1, Math.floor(q * (a.length - 1)))];
+}
+function outliers(ch) {
+  const out = [];
+  for (const f of ["long", "short"]) {
+    const list = publicVideos(ch, f);
+    const med7 = median(list.map(x => x.m.d7)), med2 = median(list.map(x => x.m.d2));
+    for (const x of list) {
+      if (x.m.d7 != null && med7 && list.length >= 4 && x.m.d7 >= 2 * med7) out.push({ ...x, ratio: x.m.d7 / med7, win: "7 дней" });
+      else if (x.m.d7 == null && x.m.d2 != null && med2 && list.length >= 4 && x.m.d2 >= 2 * med2) out.push({ ...x, ratio: x.m.d2 / med2, win: "48 ч" });
+    }
+  }
+  return out.sort((a, b) => b.ratio - a.ratio);
+}
+
+// ---------------------------------------------------------------- calendar merge (YouTube + pipeline calendar.json)
+const norm = s => String(s || "").toLowerCase().replace(/#\w+/g, "").replace(/[^a-z0-9а-яё]+/g, " ").trim();
+function rubricColors(ch) {
+  const keys = Object.keys(ch.calendar?.rubrics || {});
+  return Object.fromEntries(keys.map((k, i) => [k, `var(--s${(i % 8) + 1})`]));
+}
+function calendarItems(ch) {
+  const items = [], byYt = {}, byTitle = {};
+  for (const [id, v] of Object.entries(ch.videos || {})) {
+    let status, date;
+    if (v.privacy === "public") { status = "published"; date = v.published_at; }
+    else if (v.publish_at) { status = "scheduled"; date = v.publish_at; }
+    else { status = "uploaded"; date = v.published_at; }
+    const it = { key: id, youtube_id: id, title: v.title, format: v.format, status, date, dateOnly: false,
+      url: v.format === "short" ? `https://youtube.com/shorts/${id}` : `https://youtu.be/${id}`, slug: ch.slug };
+    items.push(it); byYt[id] = it; byTitle[norm(v.title)] = it;
+  }
+  const pipeById = {};
+  const claimed = new Set();
+  const onYouTube = new Set(["published", "scheduled", "uploaded"]);
+  for (const p of ch.calendar?.items || []) {
+    // by id first; by title only for things that should already be on YouTube, each video claimed once
+    let it = p.youtube_id && byYt[p.youtube_id];
+    if (!it && onYouTube.has(p.status)) it = [p.title, ...(p.alt_titles || [])].map(t => byTitle[norm(t)]).find(x => x && !claimed.has(x.key));
+    if (it && claimed.has(it.key)) it = null;
+    if (it) {
+      claimed.add(it.key);
+      Object.assign(it, { rubric: p.rubric, pid: p.id, parent: p.parent, note: p.note });
+    } else {
+      it = { key: "p:" + p.id, pid: p.id, title: p.title, format: p.format || "long", status: p.status || "planned",
+        date: p.date, dateOnly: !!p.date && p.date.length <= 10, rubric: p.rubric, parent: p.parent, note: p.note, slug: ch.slug,
+        url: p.youtube_id ? `https://youtu.be/${p.youtube_id}` : null };
+      items.push(it);
+    }
+    pipeById[p.id] = it;
+  }
+  for (const it of items) it.parentTitle = it.parent && pipeById[it.parent] ? pipeById[it.parent].title : null;
+  return items.filter(it => it.date);
+}
+const localDay = iso => {
+  if (iso.length <= 10) return iso;
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const evTime = it => (it.dateOnly ? "" : new Date(it.date).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }));
+
+// ---------------------------------------------------------------- alerts
+function alerts(ch) {
+  const out = [];
+  const now = Date.now();
+  const gen = new Date(ch.generated_at).getTime();
+  if (now - gen > 12 * 3600e3) out.push(["warning", "Данные устарели", `Последний сбор ${fmtDate(ch.generated_at)}. Проверьте GitHub Actions → collect.`]);
+  if (ch.errors?.length) out.push(["info", `Сбор прошёл с ${ch.errors.length} предупреждениями`, esc(ch.errors.slice(0, 3).join(" · ")).slice(0, 400)]);
+  const longs = publicVideos(ch, "long"), shorts = publicVideos(ch, "short");
+  const ctrs = longs.filter(x => x.m.impr >= 1000).map(x => x.m.ctr);
+  const p25 = ctrs.length >= 4 ? quantile(ctrs, 0.25) : null;
+  for (const x of longs) {
+    if (x.m.age != null && x.m.age <= 7 && x.m.impr >= 300 && x.m.ctr != null && x.m.ctr < (p25 ?? 3))
+      out.push(["critical", "Низкий CTR — перепаковать", `«${esc(x.v.title)}»: CTR ${pct(x.m.ctr)} на ${fmt(x.m.impr)} показах (${p25 ? "ниже 25-го перцентиля канала" : "ниже 3%"}). Сменить превью / заголовок.`, x.id]);
+    if (x.m.age != null && x.m.age <= 30 && x.m.ret30 != null && x.m.ret30 < 50)
+      out.push(["critical", "Провал на 30-й секунде — разобрать хук", `«${esc(x.v.title)}»: досмотр до 0:30 — ${pct(x.m.ret30, 0)} (норма 60–70%).`, x.id]);
+  }
+  for (const x of shorts) if (x.m.age != null && x.m.age <= 14 && x.m.views >= 300 && x.m.stay != null && x.m.stay < 60)
+    out.push(["warning", "Shorts пролистывают", `«${esc(x.v.title)}»: engaged только ${pct(x.m.stay, 0)} просмотров (порог ~70%). Усилить первую секунду.`, x.id]);
+  for (const o of outliers(ch).slice(0, 5))
+    out.push(["good", `Выброс ×${o.ratio.toFixed(1)} — делать продолжение`, `«${esc(o.v.title)}»: ${fmt(o.v.format === "short" ? o.m.d2 ?? o.m.d7 : o.m.d7 ?? o.m.d2)} просмотров за ${o.win} — в ${o.ratio.toFixed(1)} раза выше медианы канала.`, o.id]);
+  const t = totals(ch, "all", range(ch, 28));
+  if (t.subscribersGained >= 20 && t.subscribersLost / t.subscribersGained > 0.3)
+    out.push(["warning", "Высокий отток подписчиков", `За 28 дней отписались ${fmt(t.subscribersLost)} на ${fmt(t.subscribersGained)} новых (${pct(t.subscribersLost / t.subscribersGained * 100, 0)}; норма 10–20%).`]);
+  const cal = calendarItems(ch);
+  const soon = cal.filter(it => it.format !== "short" && new Date(it.date) > new Date() && new Date(it.date) - new Date() < 7 * 864e5);
+  if (ch.calendar && !soon.length) out.push(["warning", "Пустое расписание", "На ближайшие 7 дней нет ни одного запланированного ролика."]);
+  return out;
+}
+function alertsHtml(list, chSlug) {
+  if (!list.length) return `<div class="empty">Тревог нет</div>`;
+  const ic = { critical: "!", warning: "!", good: "★", info: "i" };
+  return `<div class="alerts">${list.map(([lv, title, text, vid, slug]) => `<div class="alert ${lv}" ${vid ? `data-video="${esc(vid)}" data-ch="${esc(slug || chSlug || "")}" style="cursor:pointer"` : ""}><span class="ic">${ic[lv]}</span><div><b>${title}</b><div class="small ink2">${text}</div></div></div>`).join("")}</div>`;
+}
+
+// ---------------------------------------------------------------- charts
+function killCharts() { S.charts.forEach(c => c.destroy()); S.charts = []; }
+function chartBase() {
+  const grid = css("--grid"), muted = css("--muted"), ink = css("--ink");
+  return {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: { legend: { display: false }, tooltip: { backgroundColor: css("--surface"), titleColor: ink, bodyColor: ink, borderColor: css("--axis"), borderWidth: 1, padding: 10, boxPadding: 4, usePointStyle: true } },
+    scales: {
+      x: { grid: { display: false }, border: { color: css("--axis") }, ticks: { color: muted, maxRotation: 0, autoSkipPadding: 14, font: { size: 11 } } },
+      y: { grid: { color: grid }, border: { display: false }, ticks: { color: muted, font: { size: 11 }, callback: v => fmt(v) }, beginAtZero: true },
+    },
+  };
+}
+function lineChart(el, labels, series, yfmt) {
+  if (!window.Chart || !el) return;
+  const opt = chartBase();
+  if (yfmt) { opt.scales.y.ticks.callback = yfmt; opt.plugins.tooltip.callbacks = { label: c => `${c.dataset.label}: ${yfmt(c.parsed.y)}` }; }
+  S.charts.push(new Chart(el, { type: "line", data: { labels, datasets: series.map(s => ({ label: s.label, data: s.data, borderColor: s.color, backgroundColor: s.color, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0, spanGaps: true, borderDash: s.dash || [] })) }, options: opt }));
+}
+function barChart(el, labels, series, stacked = false) {
+  if (!window.Chart || !el) return;
+  const opt = chartBase();
+  if (stacked) { opt.scales.x.stacked = true; opt.scales.y.stacked = true; }
+  S.charts.push(new Chart(el, { type: "bar", data: { labels, datasets: series.map(s => ({ label: s.label, data: s.data, backgroundColor: s.colors || s.color, borderRadius: 4, borderSkipped: "start", maxBarThickness: 18, borderColor: css("--surface"), borderWidth: stacked ? { top: 2 } : 0 })) }, options: opt }));
+}
+const legend = items => `<div class="legend">${items.map(([c, t, dash]) => `<span><i style="background:${dash ? `repeating-linear-gradient(90deg,${c} 0 4px,transparent 4px 7px)` : c}"></i>${t}</span>`).join("")}</div>`;
+const shortLabel = d => new Date(d + "T00:00:00Z").toLocaleDateString("ru-RU", { day: "numeric", month: "short", timeZone: "UTC" });
+function hbars(rows, valFmt = fmt, color = "var(--s1)") {
+  if (!rows.length) return `<div class="empty">Нет данных</div>`;
+  const max = Math.max(...rows.map(r => r[1])) || 1;
+  const total = rows.reduce((s, r) => s + r[1], 0) || 1;
+  return `<div class="hbars">${rows.map(([t, v]) => `<div class="hbar" title="${esc(t)}: ${valFmt(v)}"><span class="t">${esc(t)}</span><span class="track"><span class="fill" style="width:${(v / max * 100).toFixed(1)}%;background:${color}"></span></span><span class="x">${pct(v / total * 100, 0)}</span></div>`).join("")}</div>`;
+}
+
+// ---------------------------------------------------------------- rendering: shell
+function channelsList() { return (S.index?.channels || []).filter(c => S.ch[c.slug]); }
+function renderShell() {
+  const sel = $("#channel");
+  const list = channelsList();
+  sel.innerHTML = (list.length > 1 ? `<option value="__all">Все каналы (${list.length})</option>` : "") +
+    list.map(c => `<option value="${esc(c.slug)}">${esc(S.ch[c.slug].channel?.title || c.name)}</option>`).join("");
+  if (!S.view || (S.view !== "__all" && !S.ch[S.view]) || (S.view === "__all" && list.length < 2)) S.view = list.length > 1 ? "__all" : list[0]?.slug;
+  sel.value = S.view;
+  const tabs = S.view === "__all" ? [["summary", "Сводка"], ["calendar", "Календарь"], ["videos", "Ролики"]]
+    : [["overview", "Обзор"], ["videos", "Ролики"], ["calendar", "Календарь"], ["audience", "Аудитория"], ["money", "Монетизация"]];
+  if (!tabs.some(t => t[0] === S.tab)) S.tab = tabs[0][0];
+  $("#tabs").innerHTML = tabs.map(([k, t]) => `<button role="tab" data-tab="${k}" aria-selected="${k === S.tab}">${t}</button>`).join("");
+  document.querySelectorAll("#period button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.d === S.period)));
+  const gens = list.map(c => S.ch[c.slug].generated_at).sort();
+  $("#fresh").textContent = gens.length ? `обновлено ${fmtDate(gens[0])}` : "";
+  $("#demo").classList.toggle("hidden", !list.some(c => S.ch[c.slug].demo));
+  store.set("ytdash.view", S.view); store.set("ytdash.tab", S.tab); store.set("ytdash.period", String(S.period));
+  render();
+}
+function render() {
+  killCharts();
+  const m = $("#main");
+  if (!channelsList().length) { m.innerHTML = `<div class="empty">Данных пока нет — сборщик ещё не отработал.</div>`; return; }
+  const ch = S.view === "__all" ? null : S.ch[S.view];
+  const fn = {
+    summary: renderSummary, overview: renderOverview, videos: renderVideos, calendar: renderCalendar,
+    audience: renderAudience, money: renderMoney,
+  }[S.tab];
+  fn(m, ch);
+}
+
+// ---------------------------------------------------------------- tab: overview (one channel)
+function kpiTile(k, v, d, title = "") { return `<div class="tile" title="${esc(title)}"><div class="k">${k}</div><div class="v num">${v}</div><div class="d">${d}</div></div>`; }
+function renderOverview(m, ch) {
+  const N = S.period, cur = range(ch, N), prev = range(ch, N, 1);
+  const t = totals(ch, "all", cur), p = totals(ch, "all", prev);
+  const tl = totals(ch, "VIDEO_ON_DEMAND", cur);
+  const r = reachTotals(ch, cur), rp = reachTotals(ch, prev);
+  const rv = revenue(ch, cur), rvp = revenue(ch, prev);
+  const net = (t.subscribersGained ?? 0) - (t.subscribersLost ?? 0), netp = (p.subscribersGained ?? 0) - (p.subscribersLost ?? 0);
+  const rpm = rv?.rev != null && t.views ? rv.rev / t.views * 1000 : null;
+  const longAvd = tl.views ? tl.estimatedMinutesWatched * 60 / tl.views : null;
+  const engShare = t.views && t.engagedViews != null ? t.engagedViews / t.views * 100 : null;
+  m.innerHTML = `
+  <section><div class="tiles">
+    ${kpiTile("Подписчики", fmt(ch.channel?.subscribers), `<span class="${net >= 0 ? "up" : "down"}">${net >= 0 ? "+" : ""}${fmt(net)}</span> <span class="muted">за ${N} д (+${fmt(t.subscribersGained)} / −${fmt(t.subscribersLost)})</span>`)}
+    ${kpiTile("Просмотры", fmt(t.views), delta(t.views, p.views), "С 24.08.2026 YouTube считает просмотр с первого кадра")}
+    ${kpiTile("Engaged-просмотры", fmt(t.engagedViews), engShare != null ? `${pct(engShare, 0)} от всех · ${delta(t.engagedViews, p.engagedViews).replace(" к прошлому периоду", "")}` : "—", "По ним YouTube считает удержание, CTR и доход")}
+    ${kpiTile("Часы просмотра", fmt(hours(t.estimatedMinutesWatched)), delta(t.estimatedMinutesWatched, p.estimatedMinutesWatched))}
+    ${kpiTile("Показы превью", fmt(r?.impr), r ? delta(r.impr, rp?.impr) : `<span class="muted">Reporting API: первые данные через ~2 дня</span>`)}
+    ${kpiTile("CTR превью", pct(r?.ctr), r ? delta(r.ctr, rp?.ctr) : "—")}
+    ${kpiTile("Ср. время просмотра (ролики)", dur(longAvd), tl.views ? `на ${fmt(tl.views)} просмотрах роликов` : "—")}
+    ${kpiTile("Доход", rv?.rev != null ? money(rv.rev) : "—", rv?.rev != null ? `RPM ${money(rpm)} · ${delta(rv.rev, rvp?.rev).replace(" к прошлому периоду", "")}` : `<span class="muted">до монетизации — см. вкладку «Монетизация»</span>`)}
+  </div></section>
+  <section class="grid g2">
+    <div class="card"><h2>Просмотры по дням</h2>${legend([[css("--s1"), "Ролики"], [css("--s2"), "Shorts"]])}<div class="chart"><canvas id="cViews"></canvas></div></div>
+    <div class="card"><h2>Подписчики по дням (новые минус отписки)</h2><div class="chart"><canvas id="cSubs"></canvas></div></div>
+  </section>
+  <section class="grid g2">
+    <div class="card"><h2>Воронка роликов · ${N} д</h2>${funnelLong(ch, cur)}</div>
+    <div class="card"><h2>Воронка Shorts · ${N} д</h2>${funnelShort(ch, cur)}</div>
+  </section>
+  <section class="grid g2">
+    <div class="card"><h2>Что требует внимания</h2>${alertsHtml(alerts(ch), ch.slug)}</div>
+    <div class="card"><h2>Ближайшие выходы</h2>${agendaHtml(calendarItems(ch).filter(it => new Date(it.dateOnly ? it.date + "T23:59:00" : it.date) >= new Date()).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8), rubricColors(ch), ch)}
+      <div class="note">Полный план — вкладка «Календарь».</div></div>
+  </section>
+  <section class="card"><h2>Путь к монетизации</h2>${yppCompact(ch)}</section>`;
+  const days = [];
+  for (let d = cur[0]; d <= cur[1]; d = addDays(d, 1)) days.push(d);
+  const by = key => { const mp = Object.fromEntries(daily(ch, key).map(r => [r.day, r])); return days.map(d => mp[d]); };
+  const L = by("VIDEO_ON_DEMAND"), Sh = by("SHORTS"), A = by("all");
+  lineChart($("#cViews"), days.map(shortLabel), [
+    { label: "Ролики", data: L.map(r => r?.views ?? 0), color: css("--s1") },
+    { label: "Shorts", data: Sh.map(r => r?.views ?? 0), color: css("--s2") }]);
+  barChart($("#cSubs"), days.map(shortLabel), [{ label: "Подписчики", data: A.map(r => (r?.subscribersGained ?? 0) - (r?.subscribersLost ?? 0)),
+    colors: A.map(r => ((r?.subscribersGained ?? 0) - (r?.subscribersLost ?? 0)) < 0 ? css("--s8") : css("--s1")) }]);
+}
+function fstep(label, sub, val, lvl, title = "") {
+  return `<div class="fstep" title="${esc(title)}"><div class="lbl"><b>${label}</b><span>${sub}</span></div><div class="val">${val}</div><div>${badge(lvl)}</div></div>`;
+}
+function funnelLong(ch, rg) {
+  const t = totals(ch, "VIDEO_ON_DEMAND", rg);
+  const r = reachTotals(ch, rg, "long");
+  const vids = publicVideos(ch, "long").filter(x => x.m.pub >= rg[0]);
+  const ret = median(publicVideos(ch, "long").filter(x => x.m.age <= 90).map(x => x.m.ret30));
+  const apvMed = median(publicVideos(ch, "long").filter(x => x.m.age <= 90).map(x => x.m.apv));
+  const per = k => (t[k] != null && t.engagedViews ? t[k] / t.engagedViews * 100 : null);
+  const N = NORMS.long;
+  if (!t.views && !r) return `<div class="empty">Нет данных по роликам за период</div>`;
+  return `<div class="funnel">
+    ${fstep("Показ → клик (CTR)", r ? `${fmt(r.impr)} показов → ${fmt(r.clicks)} кликов` : "Reporting API — данные с задержкой ~2 дня", pct(r?.ctr), r && r.impr >= 1000 ? level(N.ctr.t, r.ctr) : "na", N.ctr.src)}
+    ${fstep("Досмотр до 0:30", "медиана роликов за 90 дней", pct(ret, 0), level(N.ret30.t, ret), N.ret30.src)}
+    ${fstep("Средний % просмотра", "медиана роликов за 90 дней", pct(apvMed, 0), level(N.apv.t, apvMed), N.apv.src)}
+    ${fstep("Просмотр → лайк", `${fmt(t.likes)} лайков на engaged`, pct(per("likes"), 2), level(N.like.t, per("likes")), N.like.src)}
+    ${fstep("Просмотр → комментарий", `${fmt(t.comments)} комментариев`, pct(per("comments"), 2), level(N.comment.t, per("comments")), N.comment.src)}
+    ${fstep("Просмотр → подписка", `+${fmt(t.subscribersGained)} подписчиков с роликов`, pct(per("subscribersGained"), 2), level(N.sub.t, per("subscribersGained")), N.sub.src)}
+  </div><div class="note">Конверсии — на engaged-просмотры. ${vids.length} роликов вышло за период. Наведите на шаг — источник нормы.</div>`;
+}
+function funnelShort(ch, rg) {
+  const t = totals(ch, "SHORTS", rg);
+  const N = NORMS.short;
+  if (!t.views) return `<div class="empty">Нет данных по Shorts за период</div>`;
+  const per = k => (t[k] != null && t.engagedViews ? t[k] / t.engagedViews * 100 : null);
+  const stay = t.engagedViews != null ? t.engagedViews / t.views * 100 : null;
+  const recent = publicVideos(ch, "short").filter(x => x.m.age <= 90 && x.m.apv != null);
+  const apvMed = median(recent.map(x => x.m.apv));
+  const apvLvl = recent.length ? level(shortApvNorm(median(recent.map(x => x.v.duration))), apvMed) : "na";
+  const cs = (t.comments ?? 0) + (t.shares ?? 0);
+  return `<div class="funnel">
+    ${fstep("Смотрят, а не листают", `${fmt(t.engagedViews)} engaged из ${fmt(t.views)}`, pct(stay, 0), level(N.stay.t, stay), N.stay.src)}
+    ${fstep("Средний % просмотра", "медиана Shorts за 90 дней (>100% = пересмотры)", pct(apvMed, 0), apvLvl, "B: <20 с — 100%, 20–40 с — 90%, >40 с — 80%")}
+    ${fstep("Просмотр → лайк", `${fmt(t.likes)} лайков`, pct(per("likes"), 2), level(N.like.t, per("likes")), N.like.src)}
+    ${fstep("Комментарии + репосты", `${fmt(cs)} всего`, pct(t.engagedViews ? cs / t.engagedViews * 100 : null, 2), level(N.comment.t, t.engagedViews ? cs / t.engagedViews * 100 : null), N.comment.src)}
+    ${fstep("Просмотр → подписка", `+${fmt(t.subscribersGained)} подписчиков с Shorts`, pct(per("subscribersGained"), 2), level(N.sub.t, per("subscribersGained")), N.sub.src)}
+  </div><div class="note">«Смотрят vs листают» в API нет — показана близкая метрика: доля engaged-просмотров.</div>`;
+}
+
+// ---------------------------------------------------------------- monetization
+const YPP_RULES = [
+  { name: "Полная монетизация (реклама), правила до 01.02.2027", subs: 1000, hours: 4000, shorts: 10e6 },
+  { name: "Полная монетизация с 01.02.2027", subs: 1000, hours: 8000, shorts: 20e6, note: "Анонс YouTube 10.08.2026; что будет с каналами, принятыми раньше, не уточнено" },
+  { name: "Ранний уровень (донаты, спонсорство; если доступен в стране)", subs: 500, hours: 3000, shorts: 3e6, uploads: 3 },
+];
+function pace(ch) {
+  const rg = range(ch, 28);
+  const t = totals(ch, "all", rg), s = totals(ch, "SHORTS", rg);
+  const tm = totals(ch, "VIDEO_ON_DEMAND", rg);
+  return { subs: ((t.subscribersGained ?? 0) - (t.subscribersLost ?? 0)) / 28, hours: (tm.estimatedMinutesWatched ?? 0) / 60 / 28, shorts: (s.engagedViews ?? 0) / 28 };
+}
+function eta(left, perDay) {
+  if (left <= 0) return `<span class="up">выполнено</span>`;
+  if (!perDay || perDay <= 0) return `<span class="muted">при текущем темпе — не достигается</span>`;
+  const days = Math.ceil(left / perDay);
+  const d = new Date(Date.now() + days * 864e5);
+  return days > 3650 ? `<span class="muted">больше 10 лет при текущем темпе</span>` : `≈ ${fmt(days)} дн. (к ${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short", year: "numeric" })})`;
+}
+function prog(label, cur, goal, perDay, unit = "") {
+  const p = goal ? Math.min(100, (cur ?? 0) / goal * 100) : 0;
+  return `<div class="prog"><div class="row"><span>${label}</span><span class="num"><b>${fmt(cur)}</b> / ${fmt(goal)}${unit}</span></div>
+    <div class="track"><div class="fill ${p >= 100 ? "done" : ""}" style="width:${p.toFixed(1)}%"></div></div>
+    <div class="row small"><span class="muted">${pct(p, 1)}</span><span class="ink2">${perDay !== undefined ? eta(goal - (cur ?? 0), perDay) : ""}</span></div></div>`;
+}
+function yppCompact(ch) {
+  const y = ch.ypp || {}, pc = pace(ch), r = YPP_RULES[0];
+  const rv = revenue(ch, range(ch, 28));
+  const earning = rv?.rev > 0;
+  return `${earning ? `<div class="small" style="margin-bottom:8px">Канал монетизирован: доход за 28 дней <b>${money(rv.rev)}</b>.</div>` : ""}
+  <div class="grid g3">
+    <div>${prog("Подписчики", y.subscribers, r.subs, pc.subs)}</div>
+    <div>${prog("Часы роликов за 365 дней", y.long_watch_hours_365, r.hours, pc.hours, " ч")}</div>
+    <div>${prog("Engaged-просмотры Shorts за 90 дней", y.shorts_engaged_90, r.shorts, undefined)}</div>
+  </div><div class="note">Нужно: подписчики + (часы ИЛИ просмотры Shorts). Прогноз — по темпу последних 28 дней. Точная цифра — в Studio → «Монетизация».</div>`;
+}
+function renderMoney(m, ch) {
+  const y = ch.ypp || {}, pc = pace(ch);
+  const rows = objs(ch.daily?.revenue);
+  const N = S.period, cur = range(ch, N);
+  const rv = revenue(ch, cur);
+  const t = totals(ch, "all", cur);
+  const rr = rows.filter(r => r.day >= cur[0] && r.day <= cur[1]);
+  const cpmMed = median(rr.filter(r => r.cpm).map(r => r.cpm));
+  const top = publicVideos(ch).filter(x => x.m.rev).sort((a, b) => b.m.rev - a.m.rev).slice(0, 10);
+  m.innerHTML = `
+  <section class="tiles">
+    ${kpiTile("Доход за период", money(rv?.rev), rv ? `реклама ${money(rv.ad)}` : "нет данных — канал не в YPP или нет доступа к доходам")}
+    ${kpiTile("RPM (на 1000 просмотров)", money(rv?.rev != null && t.views ? rv.rev / t.views * 1000 : null), "сколько получаете вы")}
+    ${kpiTile("CPM (медиана)", money(cpmMed), "сколько платит рекламодатель")}
+    ${kpiTile("Доход за всё время", money(rows.reduce((s, r) => s + (r.estimatedRevenue || 0), 0) || null), "по данным Analytics")}
+  </section>
+  ${rows.length ? `<section class="card"><h2>Доход по дням</h2><div class="chart"><canvas id="cRev"></canvas></div></section>` : ""}
+  <section class="grid g2">
+    <div class="card"><h2>Условия монетизации</h2>
+      ${YPP_RULES.map(r => `<div class="rule"><h3>${r.name}</h3>
+        ${prog("Подписчики", y.subscribers, r.subs, pc.subs)}
+        ${r.uploads ? prog("Публичных роликов за 90 дней", y.public_uploads_90, r.uploads) : ""}
+        <div class="small muted" style="margin:4px 0 2px">и одно из двух:</div>
+        ${prog("Часы просмотра роликов за 365 дней", y.long_watch_hours_365, r.hours, pc.hours, " ч")}
+        ${prog("Просмотры Shorts за 90 дней", y.shorts_engaged_90, r.shorts, undefined)}
+        ${r.note ? `<div class="note">${r.note}</div>` : ""}</div>`).join("")}
+      <div class="note">Часы считаются только по длинным роликам (Shorts не входят), Shorts — по engaged-просмотрам ленты. Значения из API приблизительные: официальная цифра — Studio → «Монетизация».</div>
+    </div>
+    <div class="card"><h2>Самые доходные ролики</h2>${top.length ? `<div class="hbars">${top.map(x => `<div class="hbar"><span class="t" title="${esc(x.v.title)}">${esc(x.v.title)}</span><span class="track"><span class="fill" style="width:${(x.m.rev / top[0].m.rev * 100).toFixed(1)}%"></span></span><span class="x">${money(x.m.rev)}</span></div>`).join("")}</div>` : `<div class="empty">Появится после подключения монетизации</div>`}
+      <h2 style="margin-top:18px">Темп за 28 дней</h2>
+      <div class="small ink2">+${fmt(pc.subs * 28)} подписчиков · ${fmt(pc.hours * 28)} ч роликов · ${fmt(pc.shorts * 28)} engaged-просмотров Shorts</div>
+    </div>
+  </section>`;
+  if (rows.length) {
+    const sel = rows.filter(r => r.day >= cur[0]);
+    barChart($("#cRev"), sel.map(r => shortLabel(r.day)), [{ label: "Доход, $", data: sel.map(r => r.estimatedRevenue || 0), color: css("--s3") }]);
+  }
+}
+
+// ---------------------------------------------------------------- tab: videos
+const COLS = [
+  ["title", "Ролик", null],
+  ["published", "Вышел", x => x.m.pub, x => x.m.pub ? fmtDate(x.v.published_at, false) : "—"],
+  ["duration", "Длина", x => x.v.duration, x => dur(x.v.duration)],
+  ["views", "Просмотры", x => x.m.views, x => fmt(x.m.views)],
+  ["d2", "48 ч", x => x.m.d2, x => fmt(x.m.d2)],
+  ["d7", "7 дн", x => x.m.d7, x => fmt(x.m.d7)],
+  ["impr", "Показы", x => x.m.impr, x => fmt(x.m.impr)],
+  ["ctr", "CTR", x => x.m.ctr, x => x.v.format === "short" ? "—" : lvlCell(pct(x.m.ctr), x.m.impr >= 1000 ? level(NORMS.long.ctr.t, x.m.ctr) : "na")],
+  ["ret30", "0:30", x => x.m.ret30, x => x.v.format === "short" ? "—" : lvlCell(pct(x.m.ret30, 0), level(NORMS.long.ret30.t, x.m.ret30))],
+  ["stay", "Смотрят", x => x.v.format === "short" ? x.m.stay : null, x => x.v.format === "short" ? lvlCell(pct(x.m.stay, 0), level(NORMS.short.stay.t, x.m.stay)) : "—"],
+  ["apv", "% просм.", x => x.m.apv, x => lvlCell(pct(x.m.apv, 0), x.v.format === "short" ? level(shortApvNorm(x.v.duration), x.m.apv) : level(NORMS.long.apv.t, x.m.apv))],
+  ["avd", "Ср. время", x => x.m.avd, x => dur(x.m.avd)],
+  ["hours", "Часы", x => x.m.minutes, x => fmt(hours(x.m.minutes))],
+  ["subs", "Подписки", x => x.m.subs, x => fmt(x.m.subs)],
+  ["sub", "Подп./просм.", x => x.m.sub, x => pct(x.m.sub, 2)],
+  ["like", "Лайки/просм.", x => x.m.like, x => pct(x.m.like, 1)],
+  ["rev", "Доход", x => x.m.rev, x => money(x.m.rev)],
+];
+function lvlCell(v, l) { return l === "na" ? `<span class="muted">${v}</span>` : `${v} <span class="badge b-${l}" title="${LVL[l]}"></span>`; }
+function renderVideos(m, ch) {
+  const chans = ch ? [ch] : channelsList().map(c => S.ch[c.slug]);
+  let list = [];
+  for (const c of chans) for (const x of publicVideos(c)) list.push({ ...x, ch: c });
+  const rc = Object.fromEntries(chans.map(c => [c.slug, Object.fromEntries((c.calendar?.items || []).filter(p => p.youtube_id).map(p => [p.youtube_id, p.rubric]))]));
+  if (S.vfilter !== "all") list = list.filter(x => x.v.format === S.vfilter);
+  const col = COLS.find(c => c[0] === S.vsort[0]) || COLS[1];
+  list.sort((a, b) => ((col[2](a) ?? -Infinity) > (col[2](b) ?? -Infinity) ? 1 : -1) * S.vsort[1]);
+  const priv = chans.reduce((s, c) => s + Object.values(c.videos || {}).filter(v => v.privacy !== "public").length, 0);
+  m.innerHTML = `<section style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      <div class="seg" id="vf">${[["all", "Все"], ["long", "Ролики"], ["short", "Shorts"]].map(([k, t]) => `<button data-f="${k}" aria-pressed="${S.vfilter === k}">${t}</button>`).join("")}</div>
+      <span class="muted small">${list.length} опубликовано${priv ? ` · ${priv} в расписании/приватных — см. «Календарь»` : ""} · нажмите на строку — подробности</span></section>
+    <div class="tablewrap"><table><thead><tr>${!ch ? "<th>Канал</th>" : ""}${COLS.map(c => `<th data-sort="${c[0]}" class="${c[0] === "title" ? "" : "n"}">${c[1]}${S.vsort[0] === c[0] ? (S.vsort[1] > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead>
+    <tbody>${list.map(x => `<tr data-video="${esc(x.id)}" data-ch="${esc(x.ch.slug)}">${!ch ? `<td>${esc(x.ch.channel?.title || x.ch.name)}</td>` : ""}
+      <td class="title">${x.v.thumb ? `<img loading="lazy" src="${esc(x.v.thumb)}" alt="">` : ""}<span class="fmt">${x.v.format === "short" ? "SHORT" : "РОЛИК"}</span>${rc[x.ch.slug][x.id] ? `<span class="chip" style="--rc:${rubricColors(x.ch)[rc[x.ch.slug][x.id]]}">${esc(rc[x.ch.slug][x.id])}</span> ` : ""}${esc(x.v.title)}</td>
+      ${COLS.slice(1).map(c => `<td class="n">${c[3](x)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="20" class="empty">Нет роликов</td></tr>`}</tbody></table></div>
+    <div class="note">CTR и показы — из Reporting API (появляются через ~2 дня после публикации). 0:30 — доля зрителей на 30-й секунде. «Смотрят» у Shorts — доля engaged-просмотров. Цветная точка — уровень относительно норм (наведите).</div>`;
+}
+
+// ---------------------------------------------------------------- video detail drawer
+function openVideo(slug, id) {
+  const ch = S.ch[slug], v = ch?.videos?.[id];
+  if (!v) return;
+  killDrawerCharts();
+  const x = vm(v, ch), short = v.format === "short";
+  const peers = publicVideos(ch, v.format);
+  const rank = (k) => {
+    const vals = peers.map(p => p.m[k]).filter(z => z != null);
+    if (x[k] == null || !x.views || vals.length < 3) return "";
+    return `<span class="muted small">лучше ${Math.round(vals.filter(z => z < x[k]).length / vals.length * 100)}% роликов канала</span>`;
+  };
+  const cell = (k, label, val, l) => `<div><div class="k">${label}</div><div class="v">${val}${l ? badge(l) : ""}</div>${rank(k)}</div>`;
+  const pRub = (ch.calendar?.items || []).find(p => p.youtube_id === id);
+  const rub = pRub?.rubric ? ch.calendar.rubrics?.[pRub.rubric] : null;
+  const traffic = (v.traffic || []).map(r => [TRAFFIC[r[0]] || r[0], r[1]]);
+  const srcCtr = Object.entries(v.reach_src_days || {}).map(([k, days]) => {
+    let i = 0, c = 0; for (const [a, b] of Object.values(days)) { i += a; c += b; }
+    return [TRAFFIC[k] || k, i, i ? c / i * 100 : null];
+  }).filter(r => r[1] > 0).sort((a, b) => b[1] - a[1]);
+  $("#panel").innerHTML = `<button class="close" id="dclose">Закрыть</button>
+    <div class="small muted">${esc(ch.channel?.title || ch.name)} · ${short ? "Shorts" : "Ролик"} · ${dur(v.duration)} · вышел ${v.published_at ? fmtDate(v.published_at) : "—"}${x.age != null ? ` (${x.age} дн. назад)` : ""}</div>
+    <h2 style="font-size:18px;margin:6px 0 4px">${esc(v.title)}</h2>
+    <div class="small" style="margin-bottom:12px">${rub ? `<span class="chip" style="--rc:${rubricColors(ch)[pRub.rubric]}">${esc(pRub.rubric)} · ${esc(rub.name || rub)}</span> ` : ""}<a href="https://youtu.be/${esc(id)}" target="_blank" rel="noopener">YouTube ↗</a> · <a href="https://studio.youtube.com/video/${esc(id)}/analytics" target="_blank" rel="noopener">Studio ↗</a></div>
+    <div class="kv">
+      ${cell("views", "Просмотры", fmt(x.views))}
+      ${cell("eng", "Engaged", fmt(x.eng))}
+      ${short ? cell("stay", "Смотрят, не листают", pct(x.stay, 0), level(NORMS.short.stay.t, x.stay)) : cell("ctr", "CTR превью", pct(x.ctr), x.impr >= 1000 ? level(NORMS.long.ctr.t, x.ctr) : "na")}
+      ${short ? "" : cell("impr", "Показы", fmt(x.impr))}
+      ${short ? "" : cell("ret30", "Досмотр до 0:30", pct(x.ret30, 0), level(NORMS.long.ret30.t, x.ret30))}
+      ${cell("apv", "Средний % просмотра", pct(x.apv, 0), short ? level(shortApvNorm(v.duration), x.apv) : level(NORMS.long.apv.t, x.apv))}
+      ${cell("avd", "Ср. время просмотра", dur(x.avd))}
+      ${cell("minutes", "Часы просмотра", fmt(hours(x.minutes), 1))}
+      ${cell("like", "Лайки / engaged", pct(x.like, 2), level((short ? NORMS.short : NORMS.long).like.t, x.like))}
+      ${cell("comment", short ? "Комм.+репосты / engaged" : "Комментарии / engaged", pct(x.comment, 2), level((short ? NORMS.short : NORMS.long).comment.t, x.comment))}
+      ${cell("sub", "Подписки / engaged", pct(x.sub, 2), level((short ? NORMS.short : NORMS.long).sub.t, x.sub))}
+      ${cell("d2", "Просмотры за 48 ч", fmt(x.d2))}
+      ${cell("d7", "За 7 дней", fmt(x.d7))}
+      ${cell("d28", "За 28 дней", fmt(x.d28))}
+      ${x.rev != null ? cell("rev", "Доход", money(x.rev)) : ""}
+    </div>
+    <section class="card" style="margin-top:14px"><h2>Удержание аудитории</h2>${v.retention ? `<div class="chart"><canvas id="dRet"></canvas></div>${relNote(v)}` : `<div class="empty">Появится, когда наберётся ~100 просмотров</div>`}</section>
+    <section class="card" style="margin-top:12px"><h2>Просмотры по дням после выхода</h2>${v.daily ? `<div class="chart"><canvas id="dDaily"></canvas></div>` : `<div class="empty">Нет данных</div>`}</section>
+    <section class="grid g2" style="margin-top:12px">
+      <div class="card"><h2>Источники трафика</h2>${hbars(traffic)}</div>
+      <div class="card"><h2>CTR по источникам</h2>${srcCtr.length ? `<div class="tablewrap"><table><thead><tr><th>Источник</th><th class="n">Показы</th><th class="n">CTR</th></tr></thead><tbody>${srcCtr.map(r => `<tr><td>${esc(r[0])}</td><td class="n">${fmt(r[1])}</td><td class="n">${pct(r[2])}</td></tr>`).join("")}</tbody></table></div><div class="note">Ориентиры: поиск 8–15%, рекомендации 5–10%, главная 3–7% (C).</div>` : `<div class="empty">Reporting API — появится через ~2 дня</div>`}</div>
+    </section>`;
+  $("#drawer").classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+  if (v.retention && window.Chart) {
+    const lbl = v.retention.map(r => dur(r[0] * v.duration));
+    const opt = chartBase();
+    opt.scales.y.ticks.callback = val => val + "%";
+    opt.plugins.tooltip.callbacks = { label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(0)}%` };
+    S.drawerCharts.push(new Chart($("#dRet"), { type: "line", data: { labels: lbl, datasets: [
+      { label: "Смотрят", data: v.retention.map(r => +(r[1] * 100).toFixed(1)), borderColor: css("--s1"), backgroundColor: css("--s1"), borderWidth: 2, pointRadius: 0, tension: 0 },
+    ] }, options: opt }));
+  }
+  if (v.daily && window.Chart) {
+    const d = objs(v.daily);
+    const opt = chartBase();
+    S.drawerCharts.push(new Chart($("#dDaily"), { type: "bar", data: { labels: d.map(r => shortLabel(r.day)), datasets: [{ label: "Просмотры", data: d.map(r => r.views), backgroundColor: css(short ? "--s2" : "--s1"), borderRadius: 4, borderSkipped: "start", maxBarThickness: 18 }] }, options: opt }));
+  }
+}
+S.drawerCharts = [];
+function relNote(v) {
+  const rel = v.retention.map(r => r[2]).filter(x => x != null);
+  if (!rel.length) return "";
+  const m = rel.reduce((s, x) => s + x, 0) / rel.length;
+  const w = m >= 0.6 ? "удерживает лучше" : m <= 0.4 ? "удерживает хуже" : "держит примерно как";
+  return `<div class="note">Сравнение с роликами такой же длины на всём YouTube (relativeRetentionPerformance): <b>${m.toFixed(2)}</b> — ${w} типичного ролика (0,5 — медиана, 1 — лучше всех). Пики на графике выше 100% — пересмотры.</div>`;
+}
+function killDrawerCharts() { S.drawerCharts.forEach(c => c.destroy()); S.drawerCharts = [];
+function relNote(v) {
+  const rel = v.retention.map(r => r[2]).filter(x => x != null);
+  if (!rel.length) return "";
+  const m = rel.reduce((s, x) => s + x, 0) / rel.length;
+  const w = m >= 0.6 ? "удерживает лучше" : m <= 0.4 ? "удерживает хуже" : "держит примерно как";
+  return `<div class="note">Сравнение с роликами такой же длины на всём YouTube (relativeRetentionPerformance): <b>${m.toFixed(2)}</b> — ${w} типичного ролика (0,5 — медиана, 1 — лучше всех). Пики на графике выше 100% — пересмотры.</div>`;
+} }
+function closeDrawer() { $("#drawer").classList.add("hidden"); document.body.style.overflow = ""; killDrawerCharts(); }
+
+// ---------------------------------------------------------------- tab: calendar
+function agendaHtml(items, colors, ch) {
+  if (!items.length) return `<div class="empty">Ничего не запланировано</div>`;
+  return `<div class="agenda">${items.map(it => {
+    const when = it.dateOnly ? fmtDate(it.date + "T12:00:00", false) : fmtDate(it.date);
+    const click = it.youtube_id && ch.videos?.[it.youtube_id]?.privacy === "public" ? `data-video="${esc(it.youtube_id)}" data-ch="${esc(it.slug)}"` : it.url ? `data-url="${esc(it.url)}"` : "";
+    return `<div class="arow ${it.format === "short" && it.parent ? "child" : ""}" style="--rc:${colors[it.rubric] || "var(--axis)"}" ${click}>
+      <span class="when">${when}</span>
+      <span class="what"><span class="fmt">${it.format === "short" ? "SHORT" : "РОЛИК"}</span>${it.rubric ? `<b>${esc(it.rubric)}</b> · ` : ""}${esc(it.title)}${S.view === "__all" ? ` <span class="muted small">· ${esc(S.ch[it.slug]?.channel?.title || it.slug)}</span>` : ""}</span>
+      <span class="st st-${it.status}">${STATUS[it.status] || it.status}</span></div>`;
+  }).join("")}</div>`;
+}
+function renderCalendar(m, ch) {
+  const chans = ch ? [ch] : channelsList().map(c => S.ch[c.slug]);
+  let items = [];
+  const colors = {};
+  for (const c of chans) {
+    const rc = rubricColors(c);
+    for (const it of calendarItems(c)) { items.push(it); }
+    Object.assign(colors, rc);
+  }
+  if (!S.calMonth) { const n = new Date(); S.calMonth = [n.getFullYear(), n.getMonth()]; }
+  const [Y, M] = S.calMonth;
+  const first = new Date(Y, M, 1);
+  const startOff = (first.getDay() + 6) % 7;
+  const start = new Date(Y, M, 1 - startOff);
+  const byDay = {};
+  for (const it of items) (byDay[localDay(it.date)] ||= []).push(it);
+  for (const k in byDay) byDay[k].sort((a, b) => (a.format === "short") - (b.format === "short") || (a.dateOnly ? "99" : a.date).localeCompare(b.dateOnly ? "99" : b.date));
+  const todayK = localDay(new Date().toISOString());
+  let cells = "";
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    if (i >= 35 && d.getMonth() !== M) break;
+    cells += `<div class="day ${d.getMonth() !== M ? "out" : ""} ${k === todayK ? "today" : ""}"><span class="dn">${d.getDate()}</span>${(byDay[k] || []).map(it =>
+      `<div class="ev ${it.status} ${it.format === "short" ? "short" : ""}" style="--rc:${colors[it.rubric] || "var(--axis)"}" title="${esc(`${STATUS[it.status] || it.status} · ${it.format === "short" ? "Shorts" : "Ролик"}${it.rubric ? " · рубрика " + it.rubric : ""}${it.parentTitle ? " · из ролика «" + it.parentTitle + "»" : ""}\n${it.title}${it.note ? "\n" + it.note : ""}`)}" ${it.youtube_id && S.ch[it.slug]?.videos?.[it.youtube_id]?.privacy === "public" ? `data-video="${esc(it.youtube_id)}" data-ch="${esc(it.slug)}"` : it.url ? `data-url="${esc(it.url)}"` : ""}>${evTime(it) ? `<span class="tm">${evTime(it)}</span> ` : ""}${it.format === "short" ? "▮ " : ""}${esc(it.title)}</div>`).join("")}</div>`;
+  }
+  const rubrics = {};
+  for (const c of chans) for (const [k, r] of Object.entries(c.calendar?.rubrics || {})) rubrics[k] = r;
+  const upcoming = items.filter(it => new Date(it.dateOnly ? it.date + "T23:59:00" : it.date) >= new Date()).sort((a, b) => a.date.localeCompare(b.date));
+  const recent = items.filter(it => it.status === "published").sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
+  const srcs = chans.map(c => c.calendar?.source ? `${esc(c.calendar.source)}, обновлён ${c.calendar.updated ? fmtDate(c.calendar.updated) : "—"}` : `${esc(c.channel?.title || c.slug)}: план конвейера не подключён`).join("; ");
+  m.innerHTML = `
+    <section class="card">
+      <div class="calhead"><button class="ctl" id="calPrev" aria-label="Предыдущий месяц">←</button><span class="m">${first.toLocaleDateString("ru-RU", { month: "long", year: "numeric" })}</span><button class="ctl" id="calNext" aria-label="Следующий месяц">→</button><button class="ctl" id="calToday">Сегодня</button>
+        <span class="spacer"></span><span class="small muted">время — ваше местное</span></div>
+      ${Object.keys(rubrics).length ? `<div class="rubrics">${Object.entries(rubrics).map(([k, r]) => `<span class="chip" style="--rc:${colors[k]}">${esc(k)} · ${esc(r.name || r)}</span>`).join("")}</div>` : ""}
+      <div class="rubrics small">${["published", "scheduled", "ready", "in_production", "planned"].map(s => `<span class="st st-${s}">${STATUS[s]}</span>`).join("")}</div>
+      <div class="cal">${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map(d => `<div class="dow">${d}</div>`).join("")}${cells}</div>
+      <div class="calmobile-note note" style="display:none">На телефоне месяц показан списком ниже.</div>
+    </section>
+    <section class="grid g2">
+      <div class="card"><h2>Дальше по плану</h2>${agendaHtml(upcoming.slice(0, 30), colors, ch || S.ch[chans[0].slug])}</div>
+      <div class="card"><h2>Недавно вышло</h2>${agendaHtml(recent, colors, ch || S.ch[chans[0].slug])}</div>
+    </section>
+    <div class="note">Источник плана: ${srcs}. Вышедшие и стоящие в расписании YouTube ролики берутся из YouTube напрямую; планы — из calendar.json конвейера.</div>`;
+  $("#calPrev").onclick = () => { S.calMonth = M ? [Y, M - 1] : [Y - 1, 11]; render(); };
+  $("#calNext").onclick = () => { S.calMonth = M === 11 ? [Y + 1, 0] : [Y, M + 1]; render(); };
+  $("#calToday").onclick = () => { S.calMonth = null; render(); };
+}
+
+// ---------------------------------------------------------------- tab: audience
+function renderAudience(m, ch) {
+  const a = ch.audience || {};
+  const tr = k => objs(ch.traffic?.[k]).map(r => [TRAFFIC[r.insightTrafficSourceType] || r.insightTrafficSourceType, r.views]);
+  const sub = objs(a.subscribed);
+  const subTot = sub.reduce((s, r) => s + r.views, 0);
+  const subscribed = sub.find(r => r.subscribedStatus === "SUBSCRIBED");
+  const dev = objs(a.device).map(r => [DEVICE[r.deviceType] || r.deviceType, r.views]);
+  const tv = objs(a.device).find(r => r.deviceType === "TV");
+  const country = objs(a.country).map(r => [regionNames ? (regionNames.of(r.country) || r.country) : r.country, r.views]);
+  const demo = objs(a.demographics);
+  const ages = {};
+  for (const r of demo) ages[r.ageGroup] = (ages[r.ageGroup] || 0) + r.viewerPercentage;
+  const male = demo.filter(r => r.gender === "male").reduce((s, r) => s + r.viewerPercentage, 0);
+  const female = demo.filter(r => r.gender === "female").reduce((s, r) => s + r.viewerPercentage, 0);
+  m.innerHTML = `<div class="note" style="margin:0 0 10px">Последние 28 дней (кроме источников — тоже 28 дней). Период вверху на эту вкладку не влияет.</div>
+  <section class="grid g3">
+    <div class="card"><h2>Источники трафика · всё</h2>${hbars(tr("all"))}</div>
+    <div class="card"><h2>Источники · ролики</h2>${hbars(tr("VIDEO_ON_DEMAND"))}</div>
+    <div class="card"><h2>Источники · Shorts</h2>${hbars(tr("SHORTS"), fmt, "var(--s2)")}</div>
+  </section>
+  <section class="grid g3">
+    <div class="card"><h2>Подписчики vs не подписанные</h2>${subTot ? `<div class="tile" style="border:0;padding:0"><div class="v">${pct((subscribed?.views || 0) / subTot * 100, 0)}</div><div class="d">просмотров от подписчиков</div></div>` + hbars(sub.map(r => [r.subscribedStatus === "SUBSCRIBED" ? "Подписчики" : "Не подписаны", r.views])) : `<div class="empty">Нет данных</div>`}
+      <div class="note">Для роста широких тем ориентир — 80–90% просмотров от новых зрителей (C).</div></div>
+    <div class="card"><h2>Устройства</h2>${hbars(dev)}${tv ? `<div class="note">Телевизор: среднее время там обычно в разы выше — длинные ролики выигрывают.</div>` : ""}</div>
+    <div class="card"><h2>Страны</h2>${hbars(country)}</div>
+  </section>
+  <section class="grid g2">
+    <div class="card"><h2>Возраст</h2>${hbars(Object.entries(ages).map(([k, v]) => [AGE[k] || k, v]), v => pct(v, 0))}</div>
+    <div class="card"><h2>Пол</h2>${male + female ? hbars([["Мужчины", male], ["Женщины", female]], v => pct(v, 0)) : `<div class="empty">YouTube показывает пол и возраст только при достаточной аудитории</div>`}</div>
+  </section>`;
+}
+
+// ---------------------------------------------------------------- tab: summary (all channels)
+function renderSummary(m) {
+  const N = S.period;
+  const chans = channelsList().map(c => S.ch[c.slug]);
+  const row = ch => {
+    const cur = range(ch, N), prev = range(ch, N, 1);
+    const t = totals(ch, "all", cur), p = totals(ch, "all", prev), r = reachTotals(ch, cur), rv = revenue(ch, cur);
+    const longs = publicVideos(ch, "long").filter(x => x.m.age <= 90);
+    const pub = publicVideos(ch).filter(x => x.m.pub >= cur[0]);
+    const y = ch.ypp || {};
+    const yppP = Math.max(Math.min(1, (y.subscribers || 0) / 1000) * 0.5 + Math.min(1, Math.max((y.long_watch_hours_365 || 0) / 4000, (y.shorts_engaged_90 || 0) / 10e6)) * 0.5, 0) * 100;
+    return { ch, t, p, r, rv, net: (t.subscribersGained ?? 0) - (t.subscribersLost ?? 0), longs: pub.filter(x => x.v.format === "long").length, shorts: pub.filter(x => x.v.format === "short").length,
+      apv: median(longs.map(x => x.m.apv)), ret: median(longs.map(x => x.m.ret30)), yppP, earning: rv?.rev > 0 };
+  };
+  const rows = chans.map(row);
+  const T = k => rows.reduce((s, r) => s + (r.t[k] || 0), 0), P = k => rows.reduce((s, r) => s + (r.p[k] || 0), 0);
+  const rev = rows.reduce((s, r) => s + (r.rv?.rev || 0), 0);
+  const allOut = chans.flatMap(ch => outliers(ch).map(o => ({ ...o, ch }))).sort((a, b) => b.ratio - a.ratio).slice(0, 8);
+  const allAlerts = chans.flatMap(ch => alerts(ch).filter(a => a[0] !== "good").map(a => [a[0], `${esc(ch.channel?.title || ch.name)}: ${a[1]}`, a[2], a[3], ch.slug]));
+  const upcoming = chans.flatMap(ch => calendarItems(ch)).filter(it => new Date(it.date) >= new Date()).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 12);
+  const colors = Object.assign({}, ...chans.map(rubricColors));
+  m.innerHTML = `
+  <section class="tiles">
+    ${kpiTile("Подписчики, всего", fmt(chans.reduce((s, c) => s + (c.channel?.subscribers || 0), 0)), `<span class="up">+${fmt(T("subscribersGained") - T("subscribersLost"))}</span> <span class="muted">за ${N} д</span>`)}
+    ${kpiTile("Просмотры", fmt(T("views")), delta(T("views"), P("views")))}
+    ${kpiTile("Engaged-просмотры", fmt(T("engagedViews")), delta(T("engagedViews"), P("engagedViews")))}
+    ${kpiTile("Часы просмотра", fmt(T("estimatedMinutesWatched") / 60), delta(T("estimatedMinutesWatched"), P("estimatedMinutesWatched")))}
+    ${kpiTile("Доход", rev ? money(rev) : "—", rev ? "сумма по каналам" : "пока ни один канал не монетизирован")}
+    ${kpiTile("Вышло за период", `${rows.reduce((s, r) => s + r.longs, 0)} + ${rows.reduce((s, r) => s + r.shorts, 0)}`, "роликов + Shorts")}
+  </section>
+  <section><h2>Каналы · ${N} дней</h2><div class="tablewrap"><table><thead><tr>
+    <th>Канал</th><th class="n">Подписчики</th><th class="n">Прирост</th><th class="n">Просмотры</th><th class="n">Δ</th><th class="n">Часы</th><th class="n">CTR</th><th class="n">0:30 (мед.)</th><th class="n">% просм. (мед.)</th><th class="n">Вышло</th><th class="n">Доход</th><th class="n">До YPP</th></tr></thead>
+    <tbody>${rows.map(r => `<tr data-open="${esc(r.ch.slug)}"><td>${esc(r.ch.channel?.title || r.ch.name)}${r.ch.errors?.length ? ' <span class="badge b-na">предупр.</span>' : ""}</td>
+      <td class="n">${fmt(r.ch.channel?.subscribers)}</td><td class="n ${r.net >= 0 ? "up" : "down"}">${r.net >= 0 ? "+" : ""}${fmt(r.net)}</td>
+      <td class="n">${fmt(r.t.views)}</td><td class="n">${r.p.views ? `<span class="${r.t.views >= r.p.views ? "up" : "down"}">${pct((r.t.views - r.p.views) / r.p.views * 100, 0)}</span>` : "—"}</td>
+      <td class="n">${fmt(hours(r.t.estimatedMinutesWatched))}</td><td class="n">${lvlCell(pct(r.r?.ctr), r.r && r.r.impr >= 1000 ? level(NORMS.long.ctr.t, r.r.ctr) : "na")}</td>
+      <td class="n">${lvlCell(pct(r.ret, 0), level(NORMS.long.ret30.t, r.ret))}</td><td class="n">${lvlCell(pct(r.apv, 0), level(NORMS.long.apv.t, r.apv))}</td>
+      <td class="n">${r.longs} + ${r.shorts}</td><td class="n">${r.rv?.rev != null ? money(r.rv.rev) : "—"}</td><td class="n">${r.earning ? '<span class="up">монетизирован</span>' : pct(r.yppP, 0)}</td></tr>`).join("")}</tbody></table></div>
+    <div class="note">Сравнивайте каналы по медианам и конверсиям, а не по абсолютам. «До YPP» — грубая сводка: половина — подписчики, половина — часы или Shorts.</div></section>
+  <section class="grid g2">
+    <div class="card"><h2>Выбросы — кандидаты на продолжение</h2>${allOut.length ? `<div class="alerts">${allOut.map(o => `<div class="alert good" data-video="${esc(o.id)}" data-ch="${esc(o.ch.slug)}" style="cursor:pointer"><span class="ic">★</span><div><b>×${o.ratio.toFixed(1)} к медиане · ${esc(o.ch.channel?.title || o.ch.name)}</b><div class="small ink2">${esc(o.v.title)} — за ${o.win}</div></div></div>`).join("")}</div>` : `<div class="empty">Пока нет роликов в 2+ раза выше медианы канала</div>`}</div>
+    <div class="card"><h2>Тревоги по всем каналам</h2>${alertsHtml(allAlerts, null)}</div>
+  </section>
+  <section class="card"><h2>Ближайшие выходы по всем каналам</h2>${agendaHtml(upcoming, colors, chans[0])}</section>`;
+}
+
+// ---------------------------------------------------------------- events
+document.addEventListener("click", e => {
+  const tab = e.target.closest("[data-tab]");
+  if (tab) { S.tab = tab.dataset.tab; renderShell(); return; }
+  const per = e.target.closest("#period button");
+  if (per) { S.period = +per.dataset.d; renderShell(); return; }
+  const vf = e.target.closest("#vf button");
+  if (vf) { S.vfilter = vf.dataset.f; render(); return; }
+  const th = e.target.closest("th[data-sort]");
+  if (th) { const k = th.dataset.sort; S.vsort = [k, S.vsort[0] === k ? -S.vsort[1] : -1]; render(); return; }
+  const open = e.target.closest("[data-open]");
+  if (open) { S.view = open.dataset.open; S.tab = "overview"; renderShell(); return; }
+  const vid = e.target.closest("[data-video]");
+  if (vid) {
+    let slug = vid.dataset.ch || S.view;
+    if (!S.ch[slug]) slug = Object.keys(S.ch).find(s => S.ch[s].videos?.[vid.dataset.video]);
+    openVideo(slug, vid.dataset.video); return;
+  }
+  const url = e.target.closest("[data-url]");
+  if (url) { window.open(url.dataset.url, "_blank", "noopener"); return; }
+  if (e.target.id === "dclose" || e.target.id === "drawer") closeDrawer();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+$("#channel").addEventListener("change", e => { S.view = e.target.value; renderShell(); });
+$("#theme").addEventListener("click", () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next; store.set("ytdash.theme", next); render();
+});
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => render());
+
+// ---------------------------------------------------------------- boot
+async function unlock(pw) {
+  const index = await decrypt(await fetchText("index.enc"), pw);
+  S.index = index;
+  const results = await Promise.allSettled(index.channels.map(async c => [c.slug, await decrypt(await fetchText(c.slug + ".enc"), pw)]));
+  for (const r of results) if (r.status === "fulfilled") S.ch[r.value[0]] = r.value[1];
+}
+async function boot() {
+  const theme = store.get("ytdash.theme");
+  if (theme) document.documentElement.dataset.theme = theme;
+  S.view = store.get("ytdash.view"); S.tab = store.get("ytdash.tab"); S.period = +(store.get("ytdash.period") || 28);
+  let saved = DEMO ? "demo" : store.get(PW_KEY);
+  if (saved) {
+    try { await unlock(saved); return start(); } catch (e) {
+      if (String(e.message) === "404") return noData();
+      if (!DEMO) store.del(PW_KEY);
+    }
+  }
+  try { await fetchText("index.enc"); } catch { return noData(); }
+  $("#lock").classList.remove("hidden");
+  $("#pw").focus();
+  $("#lockform").onsubmit = async ev => {
+    ev.preventDefault();
+    const pw = $("#pw").value;
+    try { await unlock(pw); store.set(PW_KEY, pw); $("#lock").classList.add("hidden"); start(); }
+    catch { $("#pwerr").classList.remove("hidden"); }
+  };
+}
+function noData() {
+  $("#lock").classList.remove("hidden");
+  $("#lockform").innerHTML = `<div style="font-weight:650;font-size:17px">YouTube-пульт</div><div class="muted small">Сборщик ещё не записал данные. Как только GitHub Actions отработает (каждые 3 часа), здесь появится дашборд. Пока можно посмотреть <a href="?demo">демо</a>.</div>`;
+}
+function start() { $("#app").classList.remove("hidden"); renderShell(); }
+function whenChart(fn) { if (window.Chart) fn(); else window.addEventListener("load", fn, { once: true }); }
+whenChart(boot);

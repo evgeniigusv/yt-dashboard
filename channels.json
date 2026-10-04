@@ -1,0 +1,15 @@
+{
+  "channels": [
+    {
+      "slug": "chalkonaut",
+      "name": "Chalkonaut",
+      "channel_id": "UCMIeVk1Qcuf6r9I2zOz7uzg",
+      "calendar": {
+        "repo": "evgeniigusv/chalkonaut",
+        "branches": ["claude/state", "main"],
+        "path": "calendar.json",
+        "deploy_key_env": "DEPLOY_KEY_CHALKONAUT"
+      }
+    }
+  ]
+}
