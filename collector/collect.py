@@ -306,7 +306,9 @@ class Channel:
 
 def main():
     cfg = json.loads((ROOT / "channels.json").read_text())
-    password = os.environ["DASH_PASSWORD"]
+    password = os.environ.get("DASH_PASSWORD", "")
+    if len(password) < 8:  # a missing GitHub secret arrives as "" — never encrypt with an empty password
+        sys.exit("DASH_PASSWORD is not set (or shorter than 8 chars): gh secret set DASH_PASSWORD -R <repo>")
     tokens = json.loads(os.environ.get("YT_TOKENS") or "{}")
     DATA.mkdir(parents=True, exist_ok=True)
     index = []
