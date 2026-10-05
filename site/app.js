@@ -160,7 +160,7 @@ const VM = new WeakMap();
 function vm(v, ch) {
   if (VM.has(v)) return VM.get(v);
   const a = v.a || {};
-  const views = a.views ?? v.stats?.viewCount ?? 0;
+  const views = Math.max(v.stats?.viewCount ?? 0, a.views ?? 0);  // live counter; Analytics lags 2–3 days
   const eng = a.engagedViews || null;
   const has = !!a.views;  // no analytics yet (fresh video / API lag): show "мало данных", not zeros
   const per = (x) => (x != null && eng ? x / eng * 100 : null);
@@ -180,8 +180,8 @@ function vm(v, ch) {
   const m = {
     views, eng, minutes: has ? a.estimatedMinutesWatched : null, avd: has ? a.averageViewDuration : null, apv: has ? a.averageViewPercentage : null,
     like: per(a.likes), comment: per(a.comments != null ? a.comments + (v.format === "short" ? a.shares || 0 : 0) : null),
-    sub: per(a.subscribersGained), subs: a.subscribersGained ?? null, likes: a.likes ?? v.stats?.likeCount ?? null,
-    comments: a.comments ?? v.stats?.commentCount ?? null, shares: a.shares ?? null,
+    sub: per(a.subscribersGained), subs: a.subscribersGained ?? null, likes: Math.max(a.likes ?? 0, v.stats?.likeCount ?? 0) || null,
+    comments: Math.max(a.comments ?? 0, v.stats?.commentCount ?? 0) || null, shares: a.shares ?? null, live24: liveDelta(v.vh),
     impr: impr || null, ctr: impr >= 1 ? clicks / impr * 100 : null, ret30,
     stay: eng != null && views ? eng / views * 100 : null,
     d2: win(2), d7: age >= 7 ? win(7) : null, d28: age >= 28 ? win(28) : null, age,
@@ -378,6 +378,38 @@ function render() {
   fn(m, ch);
 }
 
+// ---------------------------------------------------------------- live counters (Data API snapshots, one per collector run)
+function liveDelta(hist, hours = 24, col = 1) {
+  if (!hist || hist.length < 2) return null;
+  const last = hist[hist.length - 1], now = new Date(last[0]).getTime(), cut = now - hours * 36e5;
+  let base = null;
+  for (const h of hist) if (new Date(h[0]).getTime() <= cut) base = h;
+  if (!base) { base = hist[0]; if (now - new Date(base[0]).getTime() < 3 * 36e5) return null; }
+  return { d: last[col] - base[col], hours: Math.round((now - new Date(base[0]).getTime()) / 36e5), at: last[0] };
+}
+const plusH = x => (x ? `<span class="delta ${x.d > 0 ? "up" : x.d < 0 ? "down" : "flat"}">${x.d > 0 ? "+" : ""}${fmt(x.d)}</span> <span class="muted">за ${x.hours >= 23 && x.hours <= 25 ? "24 ч" : x.hours + " ч"}</span>` : `<span class="muted">прирост появится после нескольких сборов</span>`);
+function liveSpark(hist, col = 1, hours = 72) {  // hourly growth over the last days
+  if (!hist || hist.length < 3) return null;
+  const end = new Date(hist[hist.length - 1][0]).getTime(), pts = [];
+  for (let t = end - hours * 36e5; t <= end; t += 6 * 36e5) {
+    let v = null; for (const h of hist) if (new Date(h[0]).getTime() <= t) v = h[col];
+    pts.push(v);
+  }
+  const filled = pts.filter(x => x != null);
+  return filled.length >= 3 ? filled.slice(1).map((x, i) => x - filled[i]) : null;
+}
+function lastAnalyticsDay(ch) { return daily(ch).filter(r => r.views).map(r => r.day).pop() || null; }
+function liveTiles(ch) {
+  const lh = ch.live_history, vd = liveDelta(lh, 24, 1), sd = liveDelta(lh, 24, 2);
+  const top = publicVideos(ch).filter(x => x.m.live24?.d > 0).sort((a, b) => b.m.live24.d - a.m.live24.d)[0];
+  const la = lastAnalyticsDay(ch), lag = la ? daysBetween(la, dayStr(new Date())) : null;
+  return [
+    kpiTile("Просмотров всего", fmt(ch.channel?.views), plusH(vd), "Живой счётчик YouTube (Data API), обновляется при каждом сборе", liveSpark(lh, 1), "var(--s1)"),
+    kpiTile("Подписчиков сейчас", fmt(ch.channel?.subscribers), plusH(sd), "YouTube округляет подписчиков у публичного счётчика", liveSpark(lh, 2), "var(--s3)"),
+    kpiTile("Быстрее всех за 24 ч", top ? `+${fmt(top.m.live24.d)}` : "—", top ? `<span class="ink2">${esc(top.v.title)}</span>` : "нет прироста за сутки"),
+    kpiTile("Подробная статистика", la ? fmtDate(la + "T12:00", false) : "ещё нет", la ? `YouTube Analytics отстаёт на ${lag} дн. — графики и конверсии ниже по эту дату` : "Analytics появится через 2–3 дня после первых просмотров"),
+  ].join("");
+}
 // ---------------------------------------------------------------- tab: overview (one channel)
 function kpiTile(k, v, d, title = "", spark = null, color = "var(--s1)") {
   return `<div class="tile" title="${esc(title)}"><div class="k">${k}</div><div class="v num">${v}</div><div class="d">${d}</div>${spark ? sparkline(spark, color) : ""}</div>`;
@@ -427,7 +459,7 @@ function renderOverview(m, ch) {
   const longAvd = tl.views ? tl.estimatedMinutesWatched * 60 / tl.views : null;
   const engShare = t.views && t.engagedViews != null ? t.engagedViews / t.views * 100 : null;
   const noA = !daily(ch).some(r => r.views);
-  m.innerHTML = `${noA ? `<div class="alert info" style="margin-bottom:12px"><span class="ic">i</span><div><b>YouTube Analytics ещё не отдал цифры по роликам</b><div class="small ink2">Статистика приходит с задержкой 2–3 дня, а у нового канала — до 3–4 дней. Пока работают счётчики просмотров во вкладке «Ролики» и календарь. Показы и CTR появятся примерно через 2 дня после первого сбора.</div></div></div>` : ""}
+  m.innerHTML = `<section><h2>Сейчас · живые счётчики</h2><div class="tiles">${liveTiles(ch)}</div></section>${noA ? `<div class="alert info" style="margin-bottom:12px"><span class="ic">i</span><div><b>YouTube Analytics ещё не отдал цифры по роликам</b><div class="small ink2">Статистика приходит с задержкой 2–3 дня, а у нового канала — до 3–4 дней. Пока работают счётчики просмотров во вкладке «Ролики» и календарь. Показы и CTR появятся примерно через 2 дня после первого сбора.</div></div></div>` : ""}
   <section><h2>Конверсии · ${N} д</h2><div class="tiles">${convTiles(ch, cur, prev)}</div>
     <div class="note">Конверсии считаются на engaged-просмотры (так их считает YouTube после 24.08.2026). Подробные шаги — в воронках ниже, по каждому ролику — во вкладке «Ролики». Наведите на плитку — источник нормы.</div></section>
   <section><h2>Канал · ${N} д</h2><div class="tiles">
@@ -622,6 +654,7 @@ const COLS = [
   ["published", "Вышел", x => x.m.pub, x => x.m.pub ? fmtDate(x.v.published_at, false) : "—"],
   ["duration", "Длина", x => x.v.duration, x => dur(x.v.duration)],
   ["views", "Просмотры", x => x.m.views, x => fmt(x.m.views)],
+  ["live24", "+24 ч", x => x.m.live24?.d ?? null, x => (x.m.live24 ? (x.m.live24.d > 0 ? `<span class="up">+${fmt(x.m.live24.d)}</span>` : "0") : "—")],
   ["d2", "48 ч", x => x.m.d2, x => fmt(x.m.d2)],
   ["d7", "7 дн", x => x.m.d7, x => fmt(x.m.d7)],
   ["impr", "Показы", x => x.m.impr, x => fmt(x.m.impr)],
@@ -1061,6 +1094,8 @@ function renderSummary(m) {
     <div class="rubrics">${channelsList().map(c => `<span class="chip" style="--rc:${chColor(c.slug)}">${esc(S.ch[c.slug].channel?.title || c.name)}</span>`).join("")}</div>
     ${agendaHtml(upcoming, colors, chans[0])}<div class="note">Цвет полоски — канал. Месяц целиком — вкладка «Календарь» вверху.</div></section>
   <section><h2>Аудитория · ${N} дней</h2><div class="tiles">
+    ${(() => { const ds = chans.map(c => liveDelta(c.live_history, 24, 1)).filter(Boolean); const tot = chans.reduce((a, c) => a + (c.channel?.views || 0), 0);
+      return kpiTile("Просмотров всего · живые", fmt(tot), ds.length ? plusH({ d: ds.reduce((a, x) => a + x.d, 0), hours: Math.max(...ds.map(x => x.hours)) }) : plusH(null), "Счётчики YouTube; остальные плитки — по Analytics с задержкой 2–3 дня"); })()}
     ${kpiTile("Подписчики, всего", fmt(chans.reduce((s, c) => s + (c.channel?.subscribers || 0), 0)), `<span class="up">+${fmt(T("subscribersGained") - T("subscribersLost"))}</span> <span class="muted">за ${N} д</span>`)}
     ${(() => { const sp = chans.reduce((a, c) => { const x = subsSplit(c, range(c, N)); return { long: a.long + x.long, short: a.short + x.short }; }, { long: 0, short: 0 }), all = sp.long + sp.short;
       return kpiTile("Подписки: ролики / Shorts", `${fmt(sp.long)} / ${fmt(sp.short)}`, all ? `${pct(sp.short / all * 100, 0)} — из Shorts` : "нет новых подписок"); })()}

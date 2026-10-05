@@ -34,6 +34,7 @@ CORE = "views,engagedViews,estimatedMinutesWatched,averageViewDuration,subscribe
 VIDEO = CORE + ",averageViewPercentage"
 REVENUE = "estimatedRevenue,estimatedAdRevenue,grossRevenue,cpm,playbackBasedCpm,adImpressions,monetizedPlaybacks"
 TODAY = dt.datetime.now(dt.timezone.utc).date()
+NOW = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
 
 
 def iso(d):
@@ -97,6 +98,7 @@ class Channel:
         hist = dict(self.prev.get("subs_history", []))
         hist[iso(TODAY)] = out["channel"]["subscribers"]
         out["subs_history"] = sorted(hist.items())[-800:]
+        out["live_history"] = (self.prev.get("live_history", []) + [[NOW, out["channel"]["views"], out["channel"]["subscribers"]]])[-800:]
 
         created = dt.date.fromisoformat(out["channel"]["published_at"][:10])
         start = max(created, TODAY - dt.timedelta(days=730))
@@ -147,6 +149,8 @@ class Channel:
                     "thumb": (sn.get("thumbnails", {}).get("medium") or sn.get("thumbnails", {}).get("default") or {}).get("url"),
                     "tags": sn.get("tags", [])[:15], "live": sn.get("liveBroadcastContent"),
                     "stats": {k: int(s[k]) for k in ("viewCount", "likeCount", "commentCount") if k in s},
+                    # live counter snapshots (one per run, ~30 days): Analytics lags 2–3 days, counters don't
+                    "vh": ((p.get("vh") or []) + ([[NOW, int(s["viewCount"])]] if "viewCount" in s else []))[-800:],
                     "format": p.get("format") or ("short" if dur <= 180 else "long")}
         return vids
 
@@ -239,6 +243,15 @@ class Channel:
                     r.raise_for_status()
                     jobs[rt] = r.json()["id"]
             st["jobs"] = jobs
+            if st.get("ctr_fix") != 1:  # data stored before 2026-10-05 divided a fraction by 100 once more
+                for v in vids.values():
+                    for day, (i, c) in list((v.get("reach") or {}).items()):
+                        v["reach"][day] = [i, round(c * 100, 2)]
+                    for per in (v.get("reach_src_days") or {}).values():
+                        for day, (i, c) in list(per.items()):
+                            per[day] = [i, round(c * 100, 2)]
+                st["ctr_fix"] = 1
+                st.pop("ctr_unit", None)
             for rt, job in jobs.items():
                 if rt not in REACH_REPORTS:
                     continue
@@ -251,11 +264,8 @@ class Channel:
                         csv_text = self.s.get(rep["downloadUrl"], timeout=120).text
                         rows = list(csv.DictReader(io.StringIO(csv_text)))
                         ctrs = [float(r.get("video_thumbnail_impressions_ctr") or 0) for r in rows]
-                        if any(c > 1 for c in ctrs):
-                            st["ctr_unit"] = "percent"
-                        elif any(c > 0 for c in ctrs) and "ctr_unit" not in st:
-                            self.errors.append("reach: CTR unit unclear (all values ≤ 1) — treated as percent per docs; compare with Studio")
-                        self.ingest(rt, rows, vids, st.get("ctr_unit", "percent"))
+                        # real reports (2026-10-05): 570 impressions -> 0.0175, i.e. a FRACTION despite the docs' "percentage"
+                        self.ingest(rt, rows, vids, "percent" if any(c > 1 for c in ctrs) else "fraction")
                         seen.add(rep["id"])
                     token = d.get("nextPageToken")
                     if not token:
@@ -266,8 +276,8 @@ class Channel:
         return st
 
     @staticmethod
-    def ingest(rt, rows, vids, unit="percent"):
-        """Docs: ctr = "the percentage of impressions that resulted in a click" -> fraction = value / 100."""
+    def ingest(rt, rows, vids, unit="fraction"):
+        """CTR arrives as a fraction (0.0175 = 1.75%) although the docs call it a percentage; >1 anywhere = percent."""
         for row in rows:
             v = vids.get(row.get("video_id"))
             if v is None:

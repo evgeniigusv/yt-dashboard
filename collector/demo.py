@@ -132,6 +132,8 @@ def gen_channel(slug, name, seed, created_days, scale):
         "channel": {"id": "DEMO" + slug, "title": name, "published_at": f"{created}T00:00:00Z", "subscribers": subs,
                     "views": sum(r[1] for r in daily["all"]["rows"]), "video_count": len(videos)},
         "subs_history": [], "daily_refresh": str(TODAY), "daily": daily, "videos": videos,
+        "live_history": [[(dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=72 - h)).isoformat(timespec="minutes"),
+                          int(sum(r[1] for r in daily["all"]["rows"]) + h * 120 + (h * 37) % 50), subs + h // 6] for h in range(73)],
         "traffic": {"all": traffic([("SHORTS", .41), ("RELATED_VIDEO", .22), ("SUBSCRIBER", .17), ("YT_SEARCH", .12), ("NO_LINK_OTHER", .05), ("EXT_URL", .03)]),
                     "VIDEO_ON_DEMAND": traffic([("RELATED_VIDEO", .38), ("SUBSCRIBER", .27), ("YT_SEARCH", .2), ("SHORTS_CONTENT_LINKS", .06), ("NO_LINK_OTHER", .05), ("EXT_URL", .04)]),
                     "SHORTS": traffic([("SHORTS", .91), ("YT_CHANNEL", .05), ("SUBSCRIBER", .04)])},
@@ -183,7 +185,9 @@ def video(rnd, title, day, fmt, mult, duration):
         x = j / 100
         w = (0.55 + 0.35 * math.exp(-x * 30)) * math.exp(-x * 1.3) if long else max(0.0, 1.05 - 0.45 * x)
         ret.append([x, round(w * rnd.uniform(0.97, 1.03), 4), round(rnd.uniform(0.8, 1.25), 3)])
-    return {"title": title, "published_at": f"{day}T22:00:00Z", "publish_at": None, "privacy": "public",
+    now = dt.datetime.now(dt.timezone.utc)
+    vh = [[(now - dt.timedelta(hours=48 - h)).isoformat(timespec="minutes"), int(views * (0.97 + h * 0.0006))] for h in range(49)]
+    return {"vh": vh, "title": title, "published_at": f"{day}T22:00:00Z", "publish_at": None, "privacy": "public",
             "duration": duration, "format": fmt, "thumb": None, "stats": {"viewCount": views},
             "a": a, "daily": {"cols": ["day", "views", "engagedViews", "estimatedMinutesWatched", "subscribersGained", "likes", "comments", "shares"], "rows": rows},
             "retention": ret, "reach": reach,
