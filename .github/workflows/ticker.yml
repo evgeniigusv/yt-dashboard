@@ -1,0 +1,33 @@
+name: ticker
+
+# GitHub runs `schedule` triggers only a few times a day on this repo (2026-10-05: hourly cron -> 1 run in 6 h),
+# so this job starts `collect` every hour itself and then re-dispatches itself (workflow_dispatch from GITHUB_TOKEN
+# does start new runs). The cron below only restarts the chain if it ever breaks.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 */4 * * *"
+
+permissions:
+  actions: write
+
+concurrency:
+  group: ticker
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - name: Start collect every hour (5 times), then hand over to a fresh ticker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          for i in 1 2 3 4 5; do
+            gh workflow run collect -R "$REPO" && echo "collect #$i started $(date -u +%H:%M)"
+            [ "$i" -lt 5 ] && sleep 3540
+          done
+          sleep 3300
+          gh workflow run ticker -R "$REPO"

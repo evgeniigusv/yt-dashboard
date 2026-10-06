@@ -360,8 +360,8 @@ function renderShell() {
   document.querySelectorAll("#period button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.d === S.period)));
   const gens = list.map(c => S.ch[c.slug].generated_at).sort();
   const lastA = list.map(c => daily(S.ch[c.slug]).filter(r => r.views).map(r => r.day).pop()).filter(Boolean).sort()[0];
-  $("#fresh").textContent = gens.length ? `обновлено ${fmtDate(gens[0])} · Analytics ${lastA ? "по " + fmtDate(lastA + "T12:00:00", false) : "ещё без данных"}` : "";
-  $("#fresh").title = "YouTube Analytics отдаёт статистику с задержкой 2–3 дня; счётчики просмотров роликов — сразу";
+  S.freshAt = gens[0] || null; S.lastA = lastA;
+  paintFresh();
   $("#demo").classList.toggle("hidden", !list.some(c => S.ch[c.slug].demo));
   store.set("ytdash.view", S.view); store.set("ytdash.tab", S.tab); store.set("ytdash.period", String(S.period));
   render();
@@ -770,7 +770,10 @@ function relNote(v) {
   const w = m >= 0.6 ? "удерживает лучше" : m <= 0.4 ? "удерживает хуже" : "держит примерно как";
   return `<div class="note">Сравнение с роликами такой же длины на всём YouTube (relativeRetentionPerformance): <b>${m.toFixed(2)}</b> — ${w} типичного ролика (0,5 — медиана, 1 — лучше всех). Пики на графике выше 100% — пересмотры.</div>`;
 } }
-function closeDrawer() { $("#drawer").classList.add("hidden"); document.body.style.overflow = ""; killDrawerCharts(); }
+function closeDrawer() {
+  $("#drawer").classList.add("hidden"); document.body.style.overflow = ""; killDrawerCharts();
+  if (S.pendingRender) { S.pendingRender = false; renderShell(); }
+}
 
 // ---------------------------------------------------------------- tab: calendar
 function agendaHtml(items, colors, ch) {
@@ -1156,7 +1159,39 @@ $("#theme").addEventListener("click", () => {
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => render());
 
 // ---------------------------------------------------------------- boot
+// ---------------------------------------------------------------- auto refresh: every 10 min + when the tab comes back
+function ago(iso) {
+  const m = Math.round((Date.now() - new Date(iso)) / 6e4);
+  return m < 1 ? "только что" : m < 60 ? `${m} мин назад` : m < 48 * 60 ? `${Math.floor(m / 60)} ч ${m % 60 ? (m % 60) + " мин " : ""}назад` : fmtDate(iso);
+}
+function paintFresh() {
+  const el = $("#fresh");
+  if (!S.freshAt) { el.textContent = ""; return; }
+  const old = Date.now() - new Date(S.freshAt) > 2.5 * 36e5;
+  el.textContent = `${S.refreshing ? "обновляю…" : "данные " + ago(S.freshAt)} · Analytics ${S.lastA ? "по " + fmtDate(S.lastA + "T12:00:00", false) : "ещё без данных"}`;
+  el.classList.toggle("stale", old);
+  el.title = "Нажмите, чтобы проверить свежие данные. Сбор — каждый час; живые счётчики сразу, YouTube Analytics — с задержкой 2–3 дня.";
+}
+async function refreshData(force = false) {
+  if (S.refreshing || !S.pw || (document.hidden && !force)) return;
+  S.refreshing = true; paintFresh();
+  try {
+    const idx = await decrypt(await fetchText("index.enc"), S.pw);
+    if (force || idx.generated_at !== S.index?.generated_at) {
+      await unlock(S.pw);
+      if (!$("#drawer").classList.contains("hidden")) S.pendingRender = true;
+      else { const y = window.scrollY; renderShell(); window.scrollTo(0, y); }
+    }
+  } catch { /* offline or mid-deploy: try again next tick */ }
+  S.refreshing = false; paintFresh();
+}
+setInterval(() => refreshData(), 10 * 60e3);
+setInterval(paintFresh, 60e3);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshData(); });
+document.addEventListener("click", e => { if (e.target.closest("#fresh")) refreshData(true); });
+
 async function unlock(pw) {
+  S.pw = pw;
   const index = await decrypt(await fetchText("index.enc"), pw);
   S.index = index;
   const results = await Promise.allSettled(index.channels.map(async c => [c.slug, await decrypt(await fetchText(c.slug + ".enc"), pw)]));

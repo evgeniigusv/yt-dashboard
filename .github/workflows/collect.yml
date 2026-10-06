@@ -2,7 +2,7 @@ name: collect
 
 on:
   schedule:
-    - cron: "23 * * * *"   # hourly (GitHub skips/delays some scheduled runs, so ask often)
+    - cron: "23 */2 * * *"   # backup only — the ticker workflow starts collect every hour
   workflow_dispatch:
   push:
     branches: [main]
