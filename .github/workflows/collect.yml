@@ -13,9 +13,11 @@ permissions:
   pages: write
   id-token: write
 
+# A run that hangs (2026-10-06: stuck >1 day "waiting" on the github-pages environment) must not block the queue:
+# every new run cancels whatever is still in progress (a normal run takes ~1 min, runs are hourly).
 concurrency:
   group: collect
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   collect:
