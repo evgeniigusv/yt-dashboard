@@ -434,7 +434,7 @@ def quick_actions(data, rows, vids, exps, extras, now):
         out_already = c.get("youtube_id") or (cal.get(slug) or {}).get("status") in ("published", "scheduled")
         if rv.get("waiting") and rv.get("last_sent") and not out_already:
             hours = (now - parse_iso(rv["last_sent"])).total_seconds() / 3600
-            if hours >= 24:
+            if 24 <= hours < 96:  # older than 4 days = a stale record (the video went out, approval was not logged)
                 out.append({"key": f"ok:{slug}", "kind": "approve", "video": None, "needs_yes": False,
                             "title": f"Ответить «Ок» на превью: «{short((cal.get(slug) or {}).get('title') or slug, 36)}»",
                             "why": f"видео ждёт {int(hours)} ч — слот публикации сдвигается",

@@ -894,7 +894,7 @@ function decayAlerts(ch) {
 function waitingOk(ch) {  // previews sent to Telegram that still wait for "Ок"
   const out = [];
   const cal = Object.fromEntries((ch.calendar?.items || []).map(i => [i.id, i]));
-  for (const [slug, c] of Object.entries(ch.costs?.videos || {})) if (c.review?.waiting && !c.youtube_id && !["published", "scheduled"].includes(cal[slug]?.status))
+  for (const [slug, c] of Object.entries(ch.costs?.videos || {})) if (c.review?.waiting && !c.youtube_id && !["published", "scheduled"].includes(cal[slug]?.status) && c.review.last_sent && Date.now() - new Date(c.review.last_sent) < 96 * 36e5)
     out.push({ slug, title: cal[slug]?.title || slug, sent: c.review.last_sent, round: c.review.rounds, edits: c.review.edits });
   const st = ch.pipeline_state;
   if (st?.status === "waiting" && st.slug && !out.some(o => o.slug === st.slug))
