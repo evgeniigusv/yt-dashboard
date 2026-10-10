@@ -54,6 +54,7 @@ jobs:
           YT_TOKENS: ${{ secrets.YT_TOKENS }}
           DASH_PASSWORD: ${{ secrets.DASH_PASSWORD }}
           DEPLOY_KEY_CHALKONAUT: ${{ secrets.DEPLOY_KEY_CHALKONAUT }}
+          DEPLOY_KEY_NINE_LIVES_AGO: ${{ secrets.DEPLOY_KEY_NINE_LIVES_AGO }}
         run: python collector/collect.py
 
       - name: Save data (single commit, no history growth)

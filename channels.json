@@ -14,6 +14,21 @@
         "deploy_key_env": "DEPLOY_KEY_CHALKONAUT",
         "telegram_bot": "you_sho_reddit_bot"
       }
+    },
+    {
+      "slug": "nine-lives-ago",
+      "name": "9 Lives Ago",
+      "channel_id": "UCrM_8fWeLMGnAy81y65tQNQ",
+      "calendar": {
+        "repo": "evgeniigusv/nine-lives-ago",
+        "branches": [
+          "claude/state",
+          "main"
+        ],
+        "path": "calendar.json",
+        "deploy_key_env": "DEPLOY_KEY_NINE_LIVES_AGO",
+        "telegram_bot": "you_sho_reddit_bot"
+      }
     }
   ],
   "economics": {

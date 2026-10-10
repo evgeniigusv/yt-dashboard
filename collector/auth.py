@@ -82,7 +82,10 @@ def add():
         "access_type": "offline", "prompt": "select_account consent", "state": state,
         "code_challenge": challenge, "code_challenge_method": "S256"})
     print("Opening the browser. Pick the Google account / brand channel you want to add, then Allow.")
-    webbrowser.open(url)
+    print("If it opened in the wrong browser or account, paste this link into the right one (same Mac):")
+    print(url, flush=True)
+    if "--no-open" not in sys.argv:
+        webbrowser.open(url)
     while "code" not in got and "error" not in got:
         srv.handle_request()
     if got.get("error") or got.get("state") != state:
