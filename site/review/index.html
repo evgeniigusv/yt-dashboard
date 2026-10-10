@@ -47,8 +47,9 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 .pill.wait { background: var(--accent); color: var(--on-accent); } .pill.ok { background: var(--ok); color: #fff; }
 .pill.fix { background: var(--fix); color: #fff; } .pill.bad { background: var(--bad); color: #fff; }
 .block { background: var(--card); border-radius: 14px; padding: 12px; margin-bottom: 10px; }
-.block > .lab { font-weight: 600; margin-bottom: 8px; display: flex; gap: 8px; align-items: baseline; }
-.block > .lab span { color: var(--hint); font-weight: 400; font-size: 13px; }
+.block > .lab { margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
+.block > .lab b { flex: none; font-weight: 600; }
+.block > .lab span { color: var(--hint); font-size: 13px; }
 .player { position: relative; border-radius: 10px; overflow: hidden; background: #000 center/cover; aspect-ratio: 16/9; display: grid; place-items: center; }
 .player.v { aspect-ratio: 9/16; max-height: 62vh; margin: 0 auto; }
 .player video { width: 100%; height: 100%; display: block; background: #000; }
@@ -205,7 +206,7 @@ function statusPill(ch, it) {
   return h("span", { class: "pill " + map[1] }, map[0]);
 }
 function posterOf(it) { const p = (it.parts || []).find((x) => x.poster) || {}; return p.poster || (((it.parts || []).find((x) => x.files) || {}).files || [{}])[0].file; }
-function lazyBg(el, ch, file) { if (file) media(ch, file, "image/jpeg").then((u) => { el.style.backgroundImage = `url(${u})`; el.textContent = ""; }).catch(() => {}); }
+function lazyBg(el, ch, file, keepKids) { if (file) media(ch, file, "image/jpeg").then((u) => { el.style.backgroundImage = `url(${u})`; if (!keepKids) el.textContent = ""; }).catch(() => {}); }
 
 function renderList() {
   const app = $("app"); app.textContent = "";
@@ -239,7 +240,7 @@ function renderList() {
 function player(ch, p) {
   const box = h("div", { class: "player" + (p.vertical ? " v" : "") });
   if (p.gone) { box.append(h("div", { class: "prog", style: "position:static;background:none;color:#aaa" }, "Видео уже на YouTube — копия убрана")); return box; }
-  lazyBg(box, ch, p.poster);
+  lazyBg(box, ch, p.poster, true);
   const btn = h("button", { class: "play", onclick: async () => {
     btn.remove(); const pr = h("div", { class: "prog" }, "Загружаю…"); box.append(pr);
     try {
@@ -286,15 +287,21 @@ function renderItem() {
     (it.decision || S.sent[k]) && (it.decision || S.sent[k]).t ? h("div", { class: "meta text" }, "Твои правки: " + (it.decision || S.sent[k]).t) : null));
 
   if (it.kind === "video") {
-    if (can) app.append(h("button", { class: "big", onclick: () => { setDraft(ch, it, (d) => { d.p = {}; for (const p of it.parts) d.p[p.key] = { a: "ok" }; }); haptic("medium"); renderItem(); toast("Отмечено. Нажми «Отправить решения» внизу."); } }, "✓ Согласовать всё"));
+    const painters = [];  // marking a part repaints only its buttons: the page is not rebuilt, so a playing video keeps playing
+    if (can) app.append(h("button", { class: "big", onclick: () => { setDraft(ch, it, (d) => { d.p = {}; for (const p of it.parts) d.p[p.key] = { a: "ok" }; }); haptic("medium"); painters.forEach((f) => f()); toast("Отмечено. Нажми «Отправить решения» внизу."); } }, "✓ Согласовать всё"));
     for (const p of it.parts) {
-      const d = ((S.draft[k] || {}).p || {})[p.key] || {};
-      const block = h("div", { class: "block" }, h("div", { class: "lab" }, p.label, h("span", {}, [p.title, p.dur ? mmss(p.dur) : null, p.hint].filter(Boolean).join(" · "))));
+      const block = h("div", { class: "block" }, h("div", { class: "lab" }, h("b", {}, p.label), h("span", {}, [p.title, p.dur ? mmss(p.dur) : null, p.hint].filter(Boolean).join(" · "))));
       block.append(p.type === "video" ? player(ch, p) : p.type === "images" ? gallery(ch, p) : h("div", { class: "text" }, p.text || ""));
       if (can) {
-        const mark = (a) => { setDraft(ch, it, (dr) => { dr.p = dr.p || {}; dr.p[p.key] = dr.p[p.key] && dr.p[p.key].a === a ? {} : { a, t: (dr.p[p.key] || {}).t || "" }; }); haptic(); renderItem(); };
-        block.append(h("div", { class: "acts" }, h("button", { class: "ok" + (d.a === "ok" ? " on" : ""), onclick: () => mark("ok") }, "✓ Ок"), h("button", { class: "fix" + (d.a === "fix" ? " on" : ""), onclick: () => mark("fix") }, "✎ Правка")));
-        if (d.a === "fix") block.append(h("textarea", { placeholder: "Что поправить?", oninput: (e) => setDraft(ch, it, (dr) => (dr.p[p.key].t = e.target.value)) }, d.t || ""));
+        const acts = h("div", { class: "acts" }), box = h("div");
+        const mark = (a) => { setDraft(ch, it, (dr) => { dr.p = dr.p || {}; dr.p[p.key] = dr.p[p.key] && dr.p[p.key].a === a ? {} : { a, t: (dr.p[p.key] || {}).t || "" }; }); haptic(); paint(true); };
+        const paint = (focus) => {
+          const d = ((S.draft[k] || {}).p || {})[p.key] || {};
+          acts.textContent = ""; box.textContent = "";
+          acts.append(h("button", { class: "ok" + (d.a === "ok" ? " on" : ""), onclick: () => mark("ok") }, "✓ Ок"), h("button", { class: "fix" + (d.a === "fix" ? " on" : ""), onclick: () => mark("fix") }, "✎ Правка"));
+          if (d.a === "fix") { const ta = h("textarea", { placeholder: "Что поправить?", oninput: (e) => setDraft(ch, it, (dr) => (dr.p[p.key].t = e.target.value)) }, d.t || ""); box.append(ta); if (focus === true) ta.focus(); }
+        };
+        painters.push(paint); paint(); block.append(acts, box);
       }
       app.append(block);
     }
@@ -307,7 +314,7 @@ function renderItem() {
     if (can) { const a = (S.draft[k] || {}).a; const pick = (x) => { setDraft(ch, it, (d) => (d.a = a === x ? null : x)); haptic(); renderItem(); };
       app.append(h("div", { class: "acts" }, h("button", { class: "ok" + (a === "yes" ? " on" : ""), onclick: () => pick("yes") }, "✓ Да"), h("button", { class: "no" + (a === "no" ? " on" : ""), onclick: () => pick("no") }, "✕ Нет"))); }
   }
-  if (it.note) app.append(h("div", { class: "block" }, h("div", { class: "lab" }, "Заметка"), h("div", { class: "text" }, it.note)));
+  if (it.note) app.append(h("div", { class: "block" }, h("div", { class: "lab" }, h("b", {}, "Заметка")), h("div", { class: "text" }, it.note)));
   if (!can && S.sent[k] && ["waiting", "new", "open"].includes(it.status) && !it.decision)
     app.append(h("button", { class: "big ghost", onclick: () => { delete S.sent[k]; save("rv_sent", S.sent); renderItem(); refreshSend(); } }, "Изменить решение"),
       h("div", { class: "hint" }, `Отправлено ${when(S.sent[k].at)}. Бот забирает решения раз в несколько часов; пока не забрал — можно отправить другое, считается последнее.`));
