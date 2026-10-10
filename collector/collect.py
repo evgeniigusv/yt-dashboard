@@ -79,7 +79,9 @@ class Channel:
         try:
             return fn()
         except Exception as e:  # one failing query must not kill the whole channel
-            self.errors.append(f"{label}: {e}"[:400])
+            # a brand-new channel with no views makes Analytics answer 500 "internal error" on some breakdowns: not a problem
+            if not (getattr(self, "empty", False) and str(e).startswith("500")):
+                self.errors.append(f"{label}: {e}"[:400])
             return default
 
     # ---------- collection ----------
@@ -95,6 +97,7 @@ class Channel:
             "thumbnail": ch["snippet"]["thumbnails"].get("default", {}).get("url"),
             "published_at": ch["snippet"]["publishedAt"], "subscribers": int(st.get("subscriberCount", 0)),
             "views": int(st.get("viewCount", 0)), "video_count": int(st.get("videoCount", 0))}
+        self.empty = out["channel"]["views"] == 0
         hist = dict(self.prev.get("subs_history", []))
         hist[iso(TODAY)] = out["channel"]["subscribers"]
         out["subs_history"] = sorted(hist.items())[-800:]
