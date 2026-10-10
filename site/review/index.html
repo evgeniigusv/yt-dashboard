@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Согласования</title>
+<script>
+// The access key comes inside the button link (#k=…). Take it before Telegram's script reads the hash, and keep the
+// hash readable for that script if the client glued its own part on with a second "#".
+(function () {
+  var h = location.hash || "";
+  var m = h.match(/(?:^#|[&?#])k=([A-Za-z0-9_-]{43})(?=[&#]|$)/);
+  window.__k = m ? m[1] : null;
+  var second = h.indexOf("#", 1);
+  if (second > 0) { try { history.replaceState(null, "", location.pathname + location.search + h.slice(0, second) + "&" + h.slice(second + 1)); } catch (e) {} }
+})();
+</script>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root {
+  --bg: var(--tg-theme-secondary-bg-color, #f1f2f4); --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #fff));
+  --text: var(--tg-theme-text-color, #16181c); --hint: var(--tg-theme-hint-color, #7d8590);
+  --accent: var(--tg-theme-button-color, #2f80ed); --on-accent: var(--tg-theme-button-text-color, #fff);
+  --link: var(--tg-theme-link-color, #2f80ed); --line: rgba(128, 128, 128, .22);
+  --ok: #2fa56a; --fix: #e08a1e; --bad: #d9534f;
+}
+@media (prefers-color-scheme: dark) { :root { --bg: var(--tg-theme-secondary-bg-color, #111418); --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #1b1f25)); --text: var(--tg-theme-text-color, #eef0f3); } }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif; }
+body { padding: 12px 12px calc(96px + env(safe-area-inset-bottom)); max-width: 720px; margin: 0 auto; overflow-wrap: anywhere; }
+h1 { font-size: 22px; margin: 4px 4px 10px; display: flex; align-items: center; gap: 8px; }
+h1 small { font: 13px/1 inherit; color: var(--hint); font-weight: 400; margin-left: auto; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint); margin: 18px 6px 8px; font-weight: 600; }
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+.chips { display: flex; gap: 6px; overflow-x: auto; padding: 0 2px 2px; scrollbar-width: none; }
+.chip { flex: none; padding: 6px 12px; border-radius: 999px; background: var(--card); color: var(--hint); font-size: 14px; }
+.chip.on { background: var(--accent); color: var(--on-accent); }
+.card { background: var(--card); border-radius: 14px; margin-bottom: 8px; overflow: hidden; }
+.row { display: flex; gap: 12px; padding: 10px; align-items: center; width: 100%; text-align: left; }
+.thumb { flex: none; width: 96px; aspect-ratio: 16/9; border-radius: 8px; background: var(--line) center/cover; display: grid; place-items: center; font-size: 26px; }
+.row b { display: block; font-weight: 600; line-height: 1.25; }
+.meta { color: var(--hint); font-size: 13px; margin-top: 3px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--line); }
+.pill.wait { background: var(--accent); color: var(--on-accent); } .pill.ok { background: var(--ok); color: #fff; }
+.pill.fix { background: var(--fix); color: #fff; } .pill.bad { background: var(--bad); color: #fff; }
+.block { background: var(--card); border-radius: 14px; padding: 12px; margin-bottom: 10px; }
+.block > .lab { font-weight: 600; margin-bottom: 8px; display: flex; gap: 8px; align-items: baseline; }
+.block > .lab span { color: var(--hint); font-weight: 400; font-size: 13px; }
+.player { position: relative; border-radius: 10px; overflow: hidden; background: #000 center/cover; aspect-ratio: 16/9; display: grid; place-items: center; }
+.player.v { aspect-ratio: 9/16; max-height: 62vh; margin: 0 auto; }
+.player video { width: 100%; height: 100%; display: block; background: #000; }
+.play { width: 64px; height: 64px; border-radius: 50%; background: rgba(0, 0, 0, .55); color: #fff; font-size: 26px; display: grid; place-items: center; padding-left: 4px; }
+.prog { position: absolute; inset: auto 0 0 0; padding: 8px 10px; background: rgba(0, 0, 0, .6); color: #fff; font-size: 13px; }
+.imgs { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.imgs figure { margin: 0; position: relative; border-radius: 8px; overflow: hidden; background: var(--line); aspect-ratio: 16/9; }
+.imgs figure:first-child { grid-column: 1 / -1; }
+.imgs img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.imgs figcaption { position: absolute; left: 6px; top: 6px; background: rgba(0, 0, 0, .6); color: #fff; border-radius: 6px; padding: 0 7px; font-size: 12px; }
+.text { white-space: pre-wrap; }
+.report { white-space: pre-wrap; font-size: 14px; } .report a { color: var(--link); }
+.acts { display: flex; gap: 8px; margin-top: 10px; }
+.acts button { flex: 1; padding: 9px 8px; border-radius: 10px; background: var(--bg); font-weight: 600; }
+.acts button.on.ok { background: var(--ok); color: #fff; } .acts button.on.fix { background: var(--fix); color: #fff; } .acts button.on.no { background: var(--bad); color: #fff; }
+textarea { width: 100%; margin-top: 8px; padding: 9px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; min-height: 64px; resize: vertical; }
+.big { display: block; width: 100%; padding: 13px; border-radius: 12px; background: var(--accent); color: var(--on-accent); font-weight: 600; margin: 4px 0 10px; }
+.big.ghost { background: var(--card); color: var(--link); }
+.hint { color: var(--hint); font-size: 13px; padding: 2px 6px 8px; }
+.empty { text-align: center; color: var(--hint); padding: 46px 20px; }
+.back { color: var(--link); padding: 4px 4px 10px; display: none; }
+#send { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: 696px; margin: 0 auto; padding: 14px; border-radius: 12px; background: var(--accent); color: var(--on-accent); font-weight: 600; display: none; box-shadow: 0 6px 20px rgba(0, 0, 0, .25); }
+#zoom { position: fixed; inset: 0; background: rgba(0, 0, 0, .92); display: none; place-items: center; z-index: 9; } #zoom img { max-width: 100%; max-height: 100%; }
+#toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 110px; background: rgba(20, 20, 20, .92); color: #fff; padding: 9px 14px; border-radius: 10px; font-size: 14px; display: none; z-index: 10; max-width: 90%; text-align: center; }
+input.code { width: 100%; padding: 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: 14px ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<div id="app"><div class="empty">Загружаю…</div></div>
+<button id="send"></button>
+<div id="zoom"><img alt=""></div>
+<div id="toast"></div>
+<script>
+"use strict";
+const tg = window.Telegram && Telegram.WebApp;
+const inTg = !!(tg && tg.platform && tg.platform !== "unknown");
+const $ = (id) => document.getElementById(id);
+const S = { key: null, cfg: null, chans: [], filter: "all", view: null, draft: load("rv_draft"), sent: load("rv_sent"), blobs: {} };
+const KIND = { video: "Видео", report: "Отчёт", ask: "Вопрос" };
+
+function load(k) { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch (e) { return {}; } }
+function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v; else if (k === "style") el.style.cssText = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v); else if (v != null && v !== false) el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(kid));
+  return el;
+}
+function toast(text, ms) { const t = $("toast"); t.textContent = text; t.style.display = "block"; clearTimeout(toast.t); toast.t = setTimeout(() => (t.style.display = "none"), ms || 2600); }
+function haptic(kind) { try { inTg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred(kind || "light"); } catch (e) {} }
+function when(ts) { return new Date(ts * 1000).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); }
+function mmss(s) { return s >= 90 ? (s / 60).toFixed(1).replace(".", ",") + " мин" : Math.round(s) + " с"; }
+
+/* ---------- crypto: RV1 | iv(16) | AES-256-CTR | HMAC-SHA256 (tools/review.py encrypt) ---------- */
+let K = null;
+async function setKey(b64) {
+  const raw = Uint8Array.from(atob(b64.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const hk = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const part = async (label) => crypto.subtle.sign("HMAC", hk, new TextEncoder().encode(label));
+  K = { enc: await crypto.subtle.importKey("raw", await part("enc"), "AES-CTR", false, ["decrypt"]),
+        mac: await crypto.subtle.importKey("raw", await part("mac"), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]) };
+}
+async function dec(buf) {
+  const u = new Uint8Array(buf), n = u.length;
+  if (n < 51 || u[0] !== 82 || u[1] !== 86 || u[2] !== 49) throw new Error("format");
+  if (!(await crypto.subtle.verify("HMAC", K.mac, u.subarray(n - 32), u.subarray(0, n - 32)))) throw new Error("key");
+  return crypto.subtle.decrypt({ name: "AES-CTR", counter: u.slice(3, 19), length: 64 }, K.enc, u.subarray(19, n - 32));
+}
+
+/* ---------- data ---------- */
+async function loadChannel(ch) {
+  ch.items = []; ch.error = null;
+  let ref = "review-" + ch.slug, pinned = false;
+  try {  // the commit id makes the read exact; without it GitHub's raw host may serve a copy up to 5 minutes old
+    const r = await fetch(`https://api.github.com/repos/${S.cfg.repo}/branches/${ref}`, { cache: "no-cache" });
+    if (r.status === 404) return;
+    if (r.ok) { ref = (await r.json()).commit.sha; pinned = true; }
+  } catch (e) {}
+  ch.base = `https://raw.githubusercontent.com/${S.cfg.repo}/${ref}/`;
+  const r = await fetch(ch.base + "index.enc", pinned ? {} : { cache: "no-store" });
+  if (r.status === 404) return;
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const idx = JSON.parse(new TextDecoder().decode(await dec(await r.arrayBuffer())));
+  ch.items = idx.items || []; ch.updated = idx.updated;
+}
+async function media(ch, file, mime, onProgress) {
+  if (S.blobs[file]) return S.blobs[file];
+  const r = await fetch(ch.base + file);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const total = +r.headers.get("content-length") || 0;
+  let buf;
+  if (r.body && onProgress) {
+    const reader = r.body.getReader(), chunks = []; let got = 0;
+    for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); got += value.length; onProgress(got, total); }
+    buf = new Uint8Array(got); let o = 0; for (const c of chunks) { buf.set(c, o); o += c.length; }
+  } else buf = new Uint8Array(await r.arrayBuffer());
+  return (S.blobs[file] = URL.createObjectURL(new Blob([await dec(buf.buffer)], { type: mime })));
+}
+
+/* ---------- decisions ---------- */
+const uid = (ch, it) => `${ch.slug}|${it.id}|${it.rev}`;
+function open(ch, it) {  // is something still expected from him on this card?
+  if (S.sent[uid(ch, it)] || it.decision) return false;
+  return (it.kind === "video" && it.status === "waiting") || (it.kind === "report" && it.status === "new") || (it.kind === "ask" && it.status === "open");
+}
+function verdict(ch, it) {  // what would be sent for this card right now, or null
+  const d = S.draft[uid(ch, it)];
+  if (!d || !open(ch, it)) return null;
+  if (it.kind !== "video") return d.a ? { a: d.a } : null;
+  const parts = it.parts.map((p) => [p, (d.p || {})[p.key]]);
+  const fixes = parts.filter(([, x]) => x && x.a === "fix" && (x.t || "").trim());
+  if (fixes.length) return { a: "fix", t: fixes.map(([p, x]) => `${p.label}: ${x.t.trim()}`).join("\n") };
+  return parts.every(([, x]) => x && x.a === "ok") ? { a: "ok" } : null;
+}
+function ready() {
+  const out = [];
+  for (const ch of S.chans) for (const it of ch.items) { const v = verdict(ch, it); if (v) out.push({ ch, it, v }); }
+  return out;
+}
+function setDraft(ch, it, fn) { const k = uid(ch, it); const d = S.draft[k] || {}; fn(d); S.draft[k] = d; save("rv_draft", S.draft); refreshSend(); }
+function refreshSend() {
+  const n = ready().length, text = `Отправить решения · ${n}`;
+  if (inTg) { n ? tg.MainButton.setParams({ text, is_visible: true, is_active: true }) : tg.MainButton.hide(); try { n ? tg.enableClosingConfirmation() : tg.disableClosingConfirmation(); } catch (e) {} }
+  else { $("send").style.display = n ? "block" : "none"; $("send").textContent = text; }
+}
+function send() {
+  const list = ready();
+  if (!list.length) return;
+  const payload = JSON.stringify({ v: 1, d: list.map(({ ch, it, v }) => ({ c: ch.slug, i: it.id, r: it.rev, a: v.a, ...(v.t ? { t: v.t } : {}) })) });
+  if (new TextEncoder().encode(payload).length > 4096) return toast("Слишком длинно для одной отправки: сократи правки или отправь часть карточек, потом остальные.", 5000);
+  const before = JSON.stringify(S.sent);
+  for (const { ch, it, v } of list) { S.sent[uid(ch, it)] = { ...v, at: Math.floor(Date.now() / 1000) }; delete S.draft[uid(ch, it)]; }
+  const keys = Object.keys(S.sent); for (const k of keys.slice(0, Math.max(0, keys.length - 60))) delete S.sent[k];
+  save("rv_sent", S.sent); save("rv_draft", S.draft);
+  if (!inTg) { console.log("sendData", payload); window.__lastPayload = payload; toast("Вне Telegram отправка не работает — решение показано в консоли.", 4000); refreshSend(); return render(); }
+  haptic("medium");
+  try { tg.disableClosingConfirmation(); } catch (e) {}
+  tg.sendData(payload);  // Telegram closes the mini app here; still being open means the message did not go
+  setTimeout(() => { S.sent = JSON.parse(before); save("rv_sent", S.sent); refreshSend(); render();
+    tg.showAlert ? tg.showAlert("Не отправилось. Открой мини-ап кнопкой «📋 Согласования» под полем ввода в чате с ботом — только оттуда решения доходят.") : toast("Не отправилось"); }, 2500);
+}
+
+/* ---------- views ---------- */
+function statusPill(ch, it) {
+  const sent = S.sent[uid(ch, it)], st = it.status;
+  const word = { ok: "согласовано", fix: "правки", seen: "просмотрено", yes: "да", no: "нет" };
+  if (sent && ["waiting", "new", "open"].includes(st)) return h("span", { class: "pill" }, `Отправлено: ${word[sent.a] || sent.a} · ждёт бота`);
+  const map = { waiting: ["Ждёт решения", "wait"], new: ["Новый", "wait"], open: ["Нужен ответ", "wait"], approved: ["Согласовано", "ok"], edits: ["Правки в работе", "fix"],
+                scheduled: ["В расписании", "ok"], published: ["Опубликовано", "ok"], seen: ["Просмотрено", ""], yes: ["Да", "ok"], no: ["Нет", ""], info: ["Для просмотра", ""],
+                error: ["Ошибка", "bad"], closed: ["Закрыто", ""] }[st] || [st, ""];
+  return h("span", { class: "pill " + map[1] }, map[0]);
+}
+function posterOf(it) { const p = (it.parts || []).find((x) => x.poster) || {}; return p.poster || (((it.parts || []).find((x) => x.files) || {}).files || [{}])[0].file; }
+function lazyBg(el, ch, file) { if (file) media(ch, file, "image/jpeg").then((u) => { el.style.backgroundImage = `url(${u})`; el.textContent = ""; }).catch(() => {}); }
+
+function renderList() {
+  const app = $("app"); app.textContent = "";
+  const total = S.chans.reduce((n, ch) => n + ch.items.filter((it) => open(ch, it)).length, 0);
+  app.append(h("h1", {}, "Согласования", h("small", {}, h("button", { onclick: () => boot(true), style: "color:var(--link)" }, "Обновить"))));
+  app.append(h("div", { class: "chips" }, [{ slug: "all", name: "Все" }, ...S.chans].map((c) =>
+    h("button", { class: "chip" + (S.filter === c.slug ? " on" : ""), onclick: () => { S.filter = c.slug; renderList(); } },
+      c.name + (c.slug !== "all" ? (() => { const n = c.items.filter((it) => open(c, it)).length; return n ? ` · ${n}` : ""; })() : total ? ` · ${total}` : "")))));
+  const rows = [];
+  for (const ch of S.chans) if (S.filter === "all" || S.filter === ch.slug) for (const it of ch.items) rows.push({ ch, it });
+  rows.sort((a, b) => (b.it.updated || b.it.created) - (a.it.updated || a.it.created));
+  const groups = [["Ждут тебя", rows.filter((r) => open(r.ch, r.it))],
+                  ["В работе", rows.filter((r) => !open(r.ch, r.it) && ["waiting", "new", "open", "approved", "edits", "error"].includes(r.it.status))],
+                  ["Готово", rows.filter((r) => !["waiting", "new", "open", "approved", "edits", "error"].includes(r.it.status)).slice(0, 15)]];
+  for (const [name, list] of groups) {
+    if (!list.length) continue;
+    app.append(h("h2", {}, name));
+    for (const { ch, it } of list) {
+      const th = h("div", { class: "thumb" }, { video: "🎬", report: "📊", ask: "❓" }[it.kind] || "•");
+      lazyBg(th, ch, posterOf(it));
+      const v = verdict(ch, it);
+      app.append(h("div", { class: "card" }, h("button", { class: "row", onclick: () => { S.view = { ch, id: it.id }; render(); window.scrollTo(0, 0); } }, th,
+        h("div", {}, h("b", {}, it.title), h("div", { class: "meta" }, h("span", { class: "dot", style: `background:${ch.color || "#888"}` }), `${ch.name} · ${KIND[it.kind] || it.kind} · ${when(it.updated || it.created)}`),
+          h("div", { class: "meta" }, statusPill(ch, it), v ? h("span", { style: "margin-left:6px" }, v.a === "fix" ? "✎ отмечены правки" : "✓ отмечено, не отправлено") : null)))));
+    }
+  }
+  if (!rows.length) app.append(h("div", { class: "empty" }, S.chans.some((c) => c.error) ? "Не получилось загрузить карточки: " + S.chans.map((c) => c.error).filter(Boolean).join("; ") : "Пока пусто. Когда появится видео на согласование или отчёт — придёт строчка в чат."));
+  else if (!groups[0][1].length) app.append(h("div", { class: "hint", style: "text-align:center;padding-top:14px" }, "Всё разобрано 👌"));
+}
+
+function player(ch, p) {
+  const box = h("div", { class: "player" + (p.vertical ? " v" : "") });
+  if (p.gone) { box.append(h("div", { class: "prog", style: "position:static;background:none;color:#aaa" }, "Видео уже на YouTube — копия убрана")); return box; }
+  lazyBg(box, ch, p.poster);
+  const btn = h("button", { class: "play", onclick: async () => {
+    btn.remove(); const pr = h("div", { class: "prog" }, "Загружаю…"); box.append(pr);
+    try {
+      const url = await media(ch, p.file, "video/mp4", (got, total) => (pr.textContent = total ? `Загружаю… ${Math.round(got / total * 100)} % из ${(total / 1e6).toFixed(0)} МБ` : `Загружаю… ${(got / 1e6).toFixed(1)} МБ`));
+      pr.remove(); box.style.backgroundImage = "";
+      const v = h("video", { src: url, controls: "", playsinline: "", autoplay: "" }); box.append(v); v.play().catch(() => {});
+    } catch (e) { pr.textContent = "Не загрузилось: " + e.message; box.append(btn); }
+  } }, "▶");
+  box.append(btn);
+  return box;
+}
+function gallery(ch, p) {
+  return h("div", { class: "imgs" }, p.files.map((f) => {
+    const img = h("img", { alt: f.label || "" });
+    media(ch, f.file, "image/jpeg").then((u) => (img.src = u)).catch(() => {});
+    return h("figure", { onclick: () => { if (img.src) { $("zoom").firstElementChild.src = img.src; $("zoom").style.display = "grid"; } } }, img, f.label ? h("figcaption", {}, f.label) : null);
+  }));
+}
+function report(html) {  // Telegram HTML -> safe DOM: only b / i / u / s / code / pre / a[href=http…] survive
+  const out = h("div", { class: "report" });
+  (function walk(src, dst) {
+    for (const n of src.childNodes) {
+      if (n.nodeType === 3) dst.append(n.textContent);
+      else if (n.nodeType === 1) {
+        const t = n.tagName.toLowerCase(); let el = dst;
+        if (["b", "i", "u", "s", "code", "pre", "strong", "em"].includes(t)) dst.append((el = document.createElement(t)));
+        else if (t === "a" && /^https?:\/\//.test(n.getAttribute("href") || "")) { const href = n.getAttribute("href"); dst.append((el = h("a", { href, onclick: (e) => { e.preventDefault(); inTg ? tg.openLink(href) : window.open(href, "_blank", "noopener"); } }))); }
+        walk(n, el);
+      }
+    }
+  })(new DOMParser().parseFromString("<div>" + html + "</div>", "text/html").body.firstChild, out);
+  return out;
+}
+
+function renderItem() {
+  const { ch, id } = S.view, it = ch.items.find((x) => x.id === id), app = $("app");
+  if (!it) { S.view = null; return renderList(); }
+  app.textContent = "";
+  const can = open(ch, it), k = uid(ch, it);
+  app.append(h("button", { class: "back", style: inTg ? "" : "display:block", onclick: back }, "← Назад"));
+  app.append(h("div", { class: "block" }, h("div", { style: "font-size:18px;font-weight:700;line-height:1.25" }, it.title),
+    h("div", { class: "meta" }, h("span", { class: "dot", style: `background:${ch.color || "#888"}` }), `${ch.name} · ${KIND[it.kind] || it.kind}` + (it.rev > 1 ? ` · версия ${it.rev}` : "") + ` · ${when(it.updated || it.created)}`),
+    h("div", { class: "meta" }, statusPill(ch, it), it.status_note ? " " + it.status_note : ""),
+    (it.decision || S.sent[k]) && (it.decision || S.sent[k]).t ? h("div", { class: "meta text" }, "Твои правки: " + (it.decision || S.sent[k]).t) : null));
+
+  if (it.kind === "video") {
+    if (can) app.append(h("button", { class: "big", onclick: () => { setDraft(ch, it, (d) => { d.p = {}; for (const p of it.parts) d.p[p.key] = { a: "ok" }; }); haptic("medium"); renderItem(); toast("Отмечено. Нажми «Отправить решения» внизу."); } }, "✓ Согласовать всё"));
+    for (const p of it.parts) {
+      const d = ((S.draft[k] || {}).p || {})[p.key] || {};
+      const block = h("div", { class: "block" }, h("div", { class: "lab" }, p.label, h("span", {}, [p.title, p.dur ? mmss(p.dur) : null, p.hint].filter(Boolean).join(" · "))));
+      block.append(p.type === "video" ? player(ch, p) : p.type === "images" ? gallery(ch, p) : h("div", { class: "text" }, p.text || ""));
+      if (can) {
+        const mark = (a) => { setDraft(ch, it, (dr) => { dr.p = dr.p || {}; dr.p[p.key] = dr.p[p.key] && dr.p[p.key].a === a ? {} : { a, t: (dr.p[p.key] || {}).t || "" }; }); haptic(); renderItem(); };
+        block.append(h("div", { class: "acts" }, h("button", { class: "ok" + (d.a === "ok" ? " on" : ""), onclick: () => mark("ok") }, "✓ Ок"), h("button", { class: "fix" + (d.a === "fix" ? " on" : ""), onclick: () => mark("fix") }, "✎ Правка")));
+        if (d.a === "fix") block.append(h("textarea", { placeholder: "Что поправить?", oninput: (e) => setDraft(ch, it, (dr) => (dr.p[p.key].t = e.target.value)) }, d.t || ""));
+      }
+      app.append(block);
+    }
+    if (can) app.append(h("div", { class: "hint" }, "Согласовано = каждая часть отмечена «Ок». Одна «Правка» с текстом — и видео уйдёт на доработку, остальное считается принятым."));
+  } else if (it.kind === "report") {
+    app.append(h("div", { class: "block" }, report(it.html || "")));
+    if (can) { const on = (S.draft[k] || {}).a === "seen"; app.append(h("button", { class: "big" + (on ? " ghost" : ""), onclick: () => { setDraft(ch, it, (d) => (d.a = on ? null : "seen")); haptic(); renderItem(); } }, on ? "Отмечено «просмотрено» · убрать" : "👁 Просмотрено")); }
+  } else {
+    if (it.text) app.append(h("div", { class: "block text" }, it.text));
+    if (can) { const a = (S.draft[k] || {}).a; const pick = (x) => { setDraft(ch, it, (d) => (d.a = a === x ? null : x)); haptic(); renderItem(); };
+      app.append(h("div", { class: "acts" }, h("button", { class: "ok" + (a === "yes" ? " on" : ""), onclick: () => pick("yes") }, "✓ Да"), h("button", { class: "no" + (a === "no" ? " on" : ""), onclick: () => pick("no") }, "✕ Нет"))); }
+  }
+  if (it.note) app.append(h("div", { class: "block" }, h("div", { class: "lab" }, "Заметка"), h("div", { class: "text" }, it.note)));
+  if (!can && S.sent[k] && ["waiting", "new", "open"].includes(it.status) && !it.decision)
+    app.append(h("button", { class: "big ghost", onclick: () => { delete S.sent[k]; save("rv_sent", S.sent); renderItem(); refreshSend(); } }, "Изменить решение"),
+      h("div", { class: "hint" }, `Отправлено ${when(S.sent[k].at)}. Бот забирает решения раз в несколько часов; пока не забрал — можно отправить другое, считается последнее.`));
+}
+function back() { S.view = null; render(); }
+function render() {
+  S.view ? renderItem() : renderList();
+  if (inTg) { try { S.view ? tg.BackButton.show() : tg.BackButton.hide(); } catch (e) {} }
+  refreshSend();
+}
+function askKey(msg) {
+  const inp = h("input", { class: "code", placeholder: "код доступа", autocapitalize: "off", autocomplete: "off", spellcheck: "false" });
+  $("app").textContent = "";
+  $("app").append(h("h1", {}, "Согласования"), h("div", { class: "block" }, h("div", { style: "margin-bottom:10px" }, msg), inp,
+    h("button", { class: "big", style: "margin-top:10px", onclick: () => { const v = inp.value.trim(); if (/^[A-Za-z0-9_-]{43}$/.test(v)) { save("rv_key", v); boot(); } else toast("Код — 43 символа, скопируй его целиком"); } }, "Открыть")));
+}
+
+async function boot(manual) {
+  if (!S.cfg) S.cfg = await (await fetch("config.json", { cache: "no-cache" })).json();
+  let key = window.__k || load("rv_key");
+  if (typeof key !== "string" && ["localhost", "127.0.0.1"].includes(location.hostname)) { try { const r = await fetch(".devkey"); if (r.ok) key = (await r.text()).trim(); } catch (e) {} }
+  if (typeof key !== "string") return askKey("Открой мини-ап кнопкой «📋 Согласования» в чате с ботом — в ней уже есть код доступа. Или вставь код сюда.");
+  save("rv_key", key);
+  await setKey(key);
+  if (!S.chans.length) S.chans = S.cfg.channels.map((c) => ({ ...c, items: [] }));
+  if (!manual) $("app").innerHTML = '<div class="empty">Загружаю…</div>';
+  await Promise.all(S.chans.map((ch) => loadChannel(ch).catch((e) => { ch.error = e.message; })));
+  if (S.chans.some((c) => c.error === "key")) { window.__k = null; save("rv_key", null); return askKey("Код доступа не подошёл. Открой мини-ап кнопкой из последнего сообщения бота или вставь новый код."); }
+  for (const k of Object.keys(S.draft)) if (!S.chans.some((ch) => ch.items.some((it) => uid(ch, it) === k))) delete S.draft[k];  // drafts of replaced cards
+  render();
+  if (manual) toast("Обновлено");
+}
+
+$("zoom").onclick = () => ($("zoom").style.display = "none");
+$("send").onclick = send;
+if (inTg) { tg.ready(); tg.expand(); tg.MainButton.onClick(send); tg.BackButton.onClick(back); }
+document.addEventListener("visibilitychange", () => { if (!document.hidden && S.key !== false && S.chans.length && !S.view && !ready().length) boot(true); });
+boot().catch((e) => { $("app").innerHTML = ""; $("app").append(h("div", { class: "empty" }, "Ошибка: " + e.message)); });
+</script>
+</body>
+</html>

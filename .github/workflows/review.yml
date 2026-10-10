@@ -1,0 +1,43 @@
+name: review
+
+# Cards of the Telegram mini app «Согласования» (site/review/). The channel repos are private; they write their cards,
+# already encrypted, to branch claude/review. This job watches those branches (about once a minute, read-only deploy
+# keys) and copies new ciphertext to this repo's branches review-<slug>, which the mini app reads.
+# Like ticker: one job runs ~5.5 h and then starts the next one; the cron only restarts a broken chain.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "13 */3 * * *"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: review
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy new cards for ~5.5 hours
+        env:
+          DEPLOY_KEY_CHALKONAUT: ${{ secrets.DEPLOY_KEY_CHALKONAUT }}
+          DEPLOY_KEY_NINE_LIVES_AGO: ${{ secrets.DEPLOY_KEY_NINE_LIVES_AGO }}
+        run: |
+          date +%s > "$RUNNER_TEMP/started"
+          python3 collector/review_sync.py --minutes 325 --every 45
+
+      - name: Hand over to a fresh run (not after a quick crash — the cron restarts the chain then)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ $(( $(date +%s) - $(cat "$RUNNER_TEMP/started" 2>/dev/null || date +%s) )) -gt 900 ]; then
+            gh workflow run review -R "$REPO"
+          fi
