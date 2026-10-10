@@ -237,7 +237,7 @@ function calendarItems(ch) {
   }
   const pipeById = {};
   const claimed = new Set();
-  const onYouTube = new Set(["published", "scheduled", "uploaded"]);
+  const onYouTube = new Set(["published", "scheduled", "uploaded", "ready"]);  // "ready": the pipeline may not know yet that it went out
   for (const p of ch.calendar?.items || []) {
     // by id first; by title only for things that should already be on YouTube, each video claimed once
     let it = p.youtube_id && byYt[p.youtube_id];

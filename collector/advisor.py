@@ -431,7 +431,10 @@ def quick_actions(data, rows, vids, exps, extras, now):
     cal = {i.get("id"): i for i in ((data.get("calendar") or {}).get("items") or [])}
     for slug, c in (((data.get("costs") or {}).get("videos")) or {}).items():
         rv = c.get("review") or {}
-        out_already = c.get("youtube_id") or (cal.get(slug) or {}).get("status") in ("published", "scheduled")
+        item = cal.get(slug) or {}
+        yt_titles = {re.sub(r"[^a-z0-9]+", " ", (v.get("title") or "").lower()).strip() for v in (data.get("videos") or {}).values()}
+        known = {re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip() for t in [item.get("title")] + list(item.get("alt_titles") or [])}
+        out_already = c.get("youtube_id") or item.get("status") in ("published", "scheduled") or bool(known & yt_titles - {""})
         if rv.get("waiting") and rv.get("last_sent") and not out_already:
             hours = (now - parse_iso(rv["last_sent"])).total_seconds() / 3600
             if 24 <= hours < 96:  # older than 4 days = a stale record (the video went out, approval was not logged)
