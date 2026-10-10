@@ -22,6 +22,7 @@ from pathlib import Path
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
+import advisor  # noqa: E402
 from crypto import decrypt, encrypt  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -125,6 +126,10 @@ class Channel:
         out["calendar"] = self.safe("calendar", self.calendar, self.prev.get("calendar"))
         out["costs"] = self.costs or self.prev.get("costs")
         out["pipeline_state"] = self.pstate or self.prev.get("pipeline_state")
+        out["errors"] = self.errors  # the advisor reports collector trouble as a risk
+        docs = self.safe("pipeline docs", self.pipeline_docs, None)
+        out["advice"] = (self.safe("advisor", lambda: advisor.build(out, docs), None) if docs is not None else None) \
+            or self.prev.get("advice")
         out["telegram_bot"] = (self.cfg.get("calendar") or {}).get("telegram_bot")
         out["errors"] = self.errors
         return out
@@ -298,6 +303,39 @@ class Channel:
                 per = v.setdefault("reach_src_days", {}).setdefault(src, {})
                 cur = per.get(date, [0, 0])
                 per[date] = [cur[0] + impr, round(cur[1] + clicks, 2)]
+
+    def pipeline_docs(self):
+        """What the channel's pipeline repo says was already changed (main branch, read without a checkout):
+        experiments, Short-cover / pinned-comment ledgers, handled advice, the analyst's last decisions."""
+        cal = self.cfg.get("calendar")
+        key = os.environ.get(cal.get("deploy_key_env", "")) if cal else None
+        if not cal or not key:
+            return {}
+        with tempfile.TemporaryDirectory() as tmp:
+            kf = Path(tmp) / "key"
+            kf.write_text(key.strip() + "\n")
+            kf.chmod(0o600)
+            env = {**os.environ, "GIT_SSH_COMMAND": f"ssh -i {kf} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"}
+            dst = Path(tmp) / "main"
+            r = subprocess.run(["git", "clone", "-q", "--depth", "1", "--filter=blob:none", "--no-checkout", "-b",
+                                cal.get("docs_branch", "main"), f"git@github.com:{cal['repo']}.git", str(dst)],
+                               env=env, capture_output=True, text=True)
+            if r.returncode:
+                raise RuntimeError(f"pipeline docs: clone failed: {r.stderr.strip()[-200:]}")
+
+            def show(path):
+                x = subprocess.run(["git", "show", f"HEAD:{path}"], cwd=dst, env=env, capture_output=True, text=True)
+                return x.stdout if x.returncode == 0 else None
+
+            def js(path):
+                t = show(path)
+                try:
+                    return json.loads(t) if t else None
+                except ValueError:
+                    return None
+            return {"improvements_md": show("docs/IMPROVEMENTS.md"), "covers": js("docs/short_covers.json"),
+                    "pins": js("docs/pinned_comments.json"), "handled": js("docs/advice_handled.json"),
+                    "decisions": js("docs/decisions_latest.json")}
 
     def calendar(self):
         cal = self.cfg.get("calendar")

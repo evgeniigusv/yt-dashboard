@@ -200,7 +200,17 @@ if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     chans = [gen_channel("demo-space", "Демо-канал 1 (космос)", 1, 75, 1.0),
              gen_channel("demo-history", "Демо-канал 2 (история)", 2, 40, 0.5)]
+    import advisor
+    demo_md = """| ID | Дата | Что изменили | Гипотеза | Метрика | Точка отсчёта | Проверяем на | Статус |
+|---|---|---|---|---|---|---|---|
+| E1 | 2026-10-01 | начало видео: бытовая загадка, затем тема | зрители уходят в первые 15 секунд | досмотр до 0:15 и 0:30 | 0:30 = 55 % | следующие 3 видео | идёт |
+| E2 | 2026-10-03 | заголовки только по трём формулам | знакомые слова поднимут CTR | CTR видео (48 ч / 7 д) | CTR 4,1 % | следующие 3 видео | идёт |
+| E3 | план | темп речи 165 слов в минуту | у лидеров формата быстрее | средний % | 38 % | после E1 | запланировано |
+"""
     for c in chans:
+        c["errors"] = []
+        c["advice"] = advisor.build(c, {"improvements_md": demo_md, "covers": {"done": {}}, "pins": {"done": {}},
+                                        "decisions": {"date": str(TODAY), "today": ["Правила не менял: ждём данные по E1"], "next": ["Итог E2 после третьего видео"], "needs_yes": []}})
         (OUT / f"{c['slug']}.enc").write_text(encrypt(c, "demo"))
     (OUT / "index.enc").write_text(encrypt({"economics": {"currency": "USD", "usd_per_hf_credit": 0.06, "fixed_monthly_usd": {"Claude Pro": 20, "Higgsfield Plus": 39, "vidIQ": None}}, "channels": [{"slug": c["slug"], "name": c["name"], "channel_id": c["channel_id"],
                                                           "status": "ok"} for c in chans]}, "demo"))

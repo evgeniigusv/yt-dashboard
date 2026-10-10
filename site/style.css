@@ -182,6 +182,15 @@ td .badge:empty::before { width: 8px; height: 8px; }
 .scale b { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 3px var(--surface); }
 .fstep .scale b { box-shadow: 0 0 0 3px var(--surface-2); }
 
+/* ---------- improvements tab ---------- */
+.zone { box-shadow: inset 3px 0 0 var(--axis), var(--shadow); }
+.zone.z-weak { box-shadow: inset 3px 0 0 var(--critical), var(--shadow); }
+.zhead { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.zval { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; display: flex; gap: 8px; align-items: center; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.zfix { background: var(--up-soft); border-radius: 10px; padding: 9px 12px; font-size: 12.5px; display: flex; flex-direction: column; gap: 5px; }
+.zsteps { margin: 4px 0 6px; padding-left: 18px; }
+.zsteps li { margin: 2px 0; }
+
 /* ---------- funnel ---------- */
 .funnel { display: flex; flex-direction: column; gap: 8px; }
 .fstep { display: grid; grid-template-columns: minmax(0, 1.6fr) auto auto; gap: 4px 12px; align-items: center; padding: 11px 14px 12px; background: var(--surface-2); border-radius: 12px; }

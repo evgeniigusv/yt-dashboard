@@ -353,8 +353,8 @@ function renderShell() {
     list.map(c => `<option value="${esc(c.slug)}">${esc(S.ch[c.slug].channel?.title || c.name)}</option>`).join("");
   if (!S.view || (S.view !== "__all" && !S.ch[S.view])) S.view = "__all";
   sel.value = S.view;
-  const tabs = S.view === "__all" ? [["summary", "Сводка"], ["calendar", "Календарь"], ["videos", "Ролики"], ["costs", "Затраты"]]
-    : [["overview", "Обзор"], ["videos", "Ролики"], ["calendar", "Календарь"], ["costs", "Затраты"], ["audience", "Аудитория"], ["money", "Монетизация"]];
+  const tabs = S.view === "__all" ? [["summary", "Сводка"], ["improve", "Улучшения"], ["calendar", "Календарь"], ["videos", "Ролики"], ["costs", "Затраты"]]
+    : [["overview", "Обзор"], ["improve", "Улучшения"], ["videos", "Ролики"], ["calendar", "Календарь"], ["costs", "Затраты"], ["audience", "Аудитория"], ["money", "Монетизация"]];
   if (!tabs.some(t => t[0] === S.tab)) S.tab = tabs[0][0];
   $("#tabs").innerHTML = tabs.map(([k, t]) => `<button role="tab" data-tab="${k}" aria-selected="${k === S.tab}">${t}</button>`).join("");
   document.querySelectorAll("#period button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.d === S.period)));
@@ -373,7 +373,7 @@ function render() {
   const ch = S.view === "__all" ? null : S.ch[S.view];
   const fn = {
     summary: renderSummary, overview: renderOverview, videos: renderVideos, calendar: renderCalendar,
-    audience: renderAudience, money: renderMoney, costs: renderCosts,
+    audience: renderAudience, money: renderMoney, costs: renderCosts, improve: renderImprove,
   }[S.tab];
   fn(m, ch);
 }
@@ -894,7 +894,7 @@ function decayAlerts(ch) {
 function waitingOk(ch) {  // previews sent to Telegram that still wait for "Ок"
   const out = [];
   const cal = Object.fromEntries((ch.calendar?.items || []).map(i => [i.id, i]));
-  for (const [slug, c] of Object.entries(ch.costs?.videos || {})) if (c.review?.waiting)
+  for (const [slug, c] of Object.entries(ch.costs?.videos || {})) if (c.review?.waiting && !c.youtube_id && !["published", "scheduled"].includes(cal[slug]?.status))
     out.push({ slug, title: cal[slug]?.title || slug, sent: c.review.last_sent, round: c.review.rounds, edits: c.review.edits });
   const st = ch.pipeline_state;
   if (st?.status === "waiting" && st.slug && !out.some(o => o.slug === st.slug))
@@ -1023,6 +1023,88 @@ function claudeStepsHtml(rows) {
     `<tr><td>${STEP_RU[k] || esc(k)}</td><td class="n">${tok(st[k].output)}</td><td class="n">${tok(st[k].input)}</td><td class="n">${tok(st[k].cache_write)}</td><td class="n">${tok(st[k].cache_read)}</td></tr>`).join("")}</tbody></table></div>
     <div class="note">На подписке токены не стоят денег напрямую — они расходуют лимиты (5 часов и неделя). Чтение кэша дешёвое и в лимиты почти не идёт; главный расход — вывод и запись в кэш.</div>`;
 }
+
+// ---------------------------------------------------------------- tab: improvements (collector/advisor.py -> ch.advice)
+const ZLVL = { weak: "weak", norm: "norm", good: "good", na: "na" };
+const EXP_STATE = { waiting: ["ждём данных", "b-na"], partial: ["первые данные", "b-norm"], verdict: ["пора подводить итог", "b-good"],
+  planned: ["запланировано", "b-na"], done: ["внедрено", "b-norm"], closed: ["закрыт", "b-na"] };
+const chTitle = c => c.channel?.title || c.name;
+function quickHtml(list, withChannel) {
+  if (!list.length) return `<div class="empty">Сейчас нет действий, которые дали бы эффект сразу</div>`;
+  return `<div class="alerts">${list.map(q => `<div class="alert ${q.kind === "sequel" ? "good" : "warning"}" ${q.video ? `data-video="${esc(q.video)}" data-ch="${esc(q.slug || "")}" style="cursor:pointer"` : ""}>
+    <span class="ic">${q.kind === "sequel" ? "★" : "⚡"}</span><div><b>${withChannel ? esc(q.chName) + ": " : ""}${esc(q.title)}</b>${q.needs_yes ? ' <span class="st st-ready">нужно твоё «да»</span>' : ""}
+    <div class="small ink2">${esc(q.why)}</div><div class="small"><b>Что сделать:</b> ${esc(q.action)}</div>${q.note ? `<div class="small muted">${esc(q.note)}</div>` : ""}</div></div>`).join("")}</div>`;
+}
+function zoneHtml(z, ch) {
+  const exps = (ch.advice.experiments || []).filter(e => (z.covered_by || []).includes(e.id));
+  const val = z.value == null ? "—" : (z.key === "cadence" ? `${z.value} из ${z.n}` : pct(z.value, z.value < 10 ? 1 : 0));
+  return `<div class="card zone z-${z.level}"><div class="zhead"><div><div class="small muted">${esc(z.area)}</div><h3 style="color:var(--ink);font-size:14px;margin:2px 0 0">${esc(z.title)}</h3></div>
+      <div class="zval">${val}${badge(ZLVL[z.level] || "na")}</div></div>
+    <div class="small ink2" style="margin:6px 0 8px">${esc(z.detail)}</div>
+    ${(z.weak || []).length ? `<div class="small muted" style="margin-bottom:8px">${z.weak.map(w => `${esc(w.title)}${w.value != null ? " — " + pct(w.value, w.value < 10 ? 1 : 0) : ""}`).join(" · ")}</div>` : ""}
+    ${exps.length ? `<div class="zfix"><b>Исправление уже внедрено — ждём проверки:</b>${exps.map(e => `<div class="small">${esc(e.id)} · ${esc(e.change.length > 110 ? e.change.slice(0, 108) + "…" : e.change)} <span class="badge ${EXP_STATE[e.state]?.[1] || "b-na"}">${EXP_STATE[e.state]?.[0] || esc(e.state)}</span></div>`).join("")}</div>`
+      : `<div class="small"><b>Вероятные причины:</b> ${z.causes.map(esc).join("; ")}.</div>
+         <div class="small" style="margin-top:4px"><b>Выход:</b><ul class="zsteps">${z.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul></div>
+         ${z.escalate && z.escalate !== "—" ? `<div class="small muted"><b>Когда менять подход:</b> ${esc(z.escalate)}</div>` : ""}`}
+  </div>`;
+}
+function expHtml(list, withChannel) {
+  if (!list.length) return `<div class="empty">Нет внедрённых исправлений, ожидающих проверки</div>`;
+  return `<div class="tablewrap"><table><thead><tr>${withChannel ? "<th>Канал</th>" : ""}<th>ID</th><th>С какого дня</th><th>Что изменили</th><th>Метрика</th><th>Точка отсчёта</th><th>Состояние</th></tr></thead><tbody>
+    ${list.map(e => `<tr style="cursor:default">${withChannel ? `<td>${esc(e.chName)}</td>` : ""}<td><b>${esc(e.id)}</b></td><td>${esc(e.date)}</td>
+      <td style="white-space:normal;min-width:260px">${esc(e.change)}${e.evidence?.length ? `<div class="small muted" style="margin-top:4px">${e.evidence.map(esc).join("<br>")}</div>` : ""}</td>
+      <td style="white-space:normal;min-width:150px">${esc(e.metric)}</td><td style="white-space:normal;min-width:170px">${esc(e.baseline)}</td>
+      <td style="white-space:normal;min-width:170px"><span class="badge ${EXP_STATE[e.state]?.[1] || "b-na"}">${EXP_STATE[e.state]?.[0] || esc(e.state)}</span><div class="small muted" style="margin-top:3px">${esc(e.state_text)}</div></td></tr>`).join("")}</tbody></table></div>`;
+}
+function risksHtml(list, withChannel) {
+  if (!list.length) return `<div class="empty">Открытых рисков нет</div>`;
+  const ic = { critical: "!", warning: "!", info: "i" };
+  return `<div class="alerts">${list.map(r => `<div class="alert ${r.severity}"><span class="ic">${ic[r.severity] || "i"}</span><div><b>${withChannel && !r.shared ? esc(r.chName) + ": " : ""}${esc(r.title)}</b>
+    <div class="small ink2">${esc(r.detail)}</div><div class="small"><b>Выход:</b> ${esc(r.way_out)}</div></div></div>`).join("")}</div>`;
+}
+function decisionsHtml(d) {
+  if (!d) return "";
+  const sec = (k, t) => ((d[k] || []).length ? `<div style="margin-top:8px"><b class="small">${t}</b><ul class="zsteps">${d[k].map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "");
+  return `<section class="card"><h2>Решения ежедневного разбора${d.date ? ` · ${esc(d.date)}` : ""}</h2>${sec("today", "Сегодня")}${sec("next", "Дальше")}${sec("needs_yes", "Нужно твоё «да»")}</section>`;
+}
+function renderImprove(m, ch) {
+  const chans = (ch ? [ch] : channelsList().map(c => S.ch[c.slug])).filter(c => c.advice);
+  if (!chans.length) { m.innerHTML = `<div class="empty">Советник ещё не посчитал рекомендации — появятся после ближайшего сбора.</div>`; return; }
+  const tag = (list, c) => (list || []).map(x => ({ ...x, slug: c.slug, chName: chTitle(c) }));
+  const quick = chans.flatMap(c => tag(c.advice.quick, c));
+  const seen = new Set();
+  const risks = chans.flatMap(c => tag(c.advice.risks, c)).filter(r => !(r.shared && seen.has(r.key)) && seen.add(r.key))
+    .sort((a, b) => ["critical", "warning", "info"].indexOf(a.severity) - ["critical", "warning", "info"].indexOf(b.severity));
+  const exps = chans.flatMap(c => tag(c.advice.experiments, c));
+  const running = exps.filter(e => ["waiting", "partial", "verdict"].includes(e.state));
+  const rest = exps.filter(e => ["planned", "done"].includes(e.state));
+  const handled = chans.flatMap(c => tag(c.advice.handled, c));
+  const multi = !ch;
+  const head = `<div class="note" style="margin:0 0 14px">Советник дашборда пересчитывает рекомендации при каждом сборе (раз в час) по одним правилам для всех каналов. Судит только по видео от 3 дней с 50+ показами и шортсам от 2 дней со 100+ просмотрами: одно видео — сигнал, три подряд — вывод. Ничего не исправляет сам: «Сделать сейчас» — это запросы на твоё решение.</div>`;
+  let zonesBlock;
+  if (multi) {
+    const keys = [...new Set(chans.flatMap(c => c.advice.zones.map(z => z.key)))];
+    const zt = k => chans.map(c => c.advice.zones.find(z => z.key === k)).find(Boolean)?.title || k;
+    zonesBlock = `<section><h2>Западающие зоны по каналам</h2><div class="tablewrap"><table><thead><tr><th>Зона</th>${chans.map(c => `<th class="n">${esc(chTitle(c))}</th>`).join("")}</tr></thead><tbody>
+      ${keys.map(k => `<tr style="cursor:default"><td>${esc(PLAY_TITLES[k] || zt(k))}</td>${chans.map(c => { const z = c.advice.zones.find(x => x.key === k);
+        return `<td class="n">${z ? `${z.value == null ? "—" : (k === "cadence" ? `${z.value} из ${z.n}` : pct(z.value, z.value < 10 ? 1 : 0))} ${badge(ZLVL[z.level] || "na")}${z.level === "weak" && z.covered_by?.length ? `<div class="small muted">исправлено, ждём: ${z.covered_by.map(esc).join(", ")}</div>` : ""}` : "—"}</td>`; }).join("")}</tr>`).join("")}
+      </tbody></table></div><div class="note">Причины и выход по каждой зоне — во вкладке «Улучшения» внутри канала.</div></section>`;
+  } else {
+    const weak = ch.advice.zones.filter(z => z.level === "weak"), ok = ch.advice.zones.filter(z => z.level !== "weak");
+    zonesBlock = `<section><h2>Западающие зоны</h2>${weak.length ? `<div class="grid g2">${weak.map(z => zoneHtml(z, ch)).join("")}</div>` : `<div class="empty">Ни одна зона не западает${ch.advice.judged.videos ? "" : " — данных пока мало, чтобы судить"}</div>`}
+      ${ok.length ? `<div class="note">Остальное: ${ok.map(z => `${esc(z.title)} — ${z.level === "na" ? "мало данных" : (z.level === "good" ? "хорошо" : "норма")}${z.value != null && z.key !== "cadence" ? ` (${pct(z.value, z.value < 10 ? 1 : 0)})` : ""}`).join(" · ")}</div>` : ""}</section>`;
+  }
+  m.innerHTML = `${head}
+    <section><h2>Сделать сейчас — даст эффект сразу</h2>${quickHtml(quick, multi)}</section>
+    ${zonesBlock}
+    <section><h2>Исправлено — ждём проверки</h2>${expHtml(running, multi)}
+      ${rest.length ? `<div class="note">Без итога: ${rest.map(e => `${multi ? esc(e.chName) + " " : ""}${esc(e.id)} (${esc(EXP_STATE[e.state][0])}) — ${esc(e.change.length > 70 ? e.change.slice(0, 68) + "…" : e.change)}`).join(" · ")}</div>` : ""}
+      ${handled.length ? `<div class="note">Уже сделано по советам: ${handled.map(h => `${multi ? esc(h.chName) + ": " : ""}${esc(h.note || h.key)} (${esc(h.date)})`).join(" · ")}</div>` : ""}</section>
+    <section><h2>Риски</h2>${risksHtml(risks, multi)}</section>
+    ${chans.map(c => (c.advice.decisions ? (multi ? `<h2 style="margin:0 0 8px 2px">${esc(chTitle(c))}</h2>` : "") + decisionsHtml(c.advice.decisions) : "")).join("")}`;
+}
+const PLAY_TITLES = { ctr: "CTR видео", r30: "Досмотр до 0:30", avg_pct: "Средний % просмотра", sub_rate: "Просмотр → подписка", impressions: "Показы за 7 дней",
+  short_engaged: "Шортсы: смотрят, не листают", short_avg_pct: "Шортсы: средний %", shorts_subs: "Доля подписчиков из шортсов", cadence: "Выпуск по плану" };
 
 // ---------------------------------------------------------------- tab: summary (all channels)
 function renderSummary(m) {
