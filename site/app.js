@@ -6,6 +6,13 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const DEMO = new URLSearchParams(location.search).has("demo");
 const BASE = DEMO ? "demo/" : "data/";
 const PW_KEY = "ytdash.pw";
+// Inside Telegram (opened from the mini app «Согласования» or a bot button): Telegram's back arrow returns to the
+// cards, links open through Telegram, the theme follows the app.
+const TG = window.Telegram?.WebApp?.platform && Telegram.WebApp.platform !== "unknown" ? Telegram.WebApp : null;
+function openUrl(url) {
+  if (!TG) return window.open(url, "_blank", "noopener");
+  /^https:\/\/t\.me\//.test(url) ? TG.openTelegramLink(url) : TG.openLink(url);
+}
 const S = { index: null, ch: {}, view: null, tab: null, period: 28, charts: [], vfilter: "all", vsort: ["published", -1], calMonth: null };
 
 // ---------------------------------------------------------------- storage (per-device conveniences only)
@@ -927,11 +934,11 @@ function waitingHtml(list) {
   if (!list.length) return `<div class="empty">Ничего не ждёт — все превью разобраны</div>`;
   return `<div class="agenda">${list.map(o => {
     const h = o.sent ? (Date.now() - new Date(o.sent)) / 36e5 : null;
-    return `<div class="arow" style="--rc:var(--warning)" ${o.bot ? `data-url="https://t.me/${esc(o.bot)}"` : ""}>
+    return `<div class="arow" style="--rc:var(--warning)" ${TG ? 'data-url="review/"' : o.bot ? `data-url="https://t.me/${esc(o.bot)}"` : ""}>
       <span class="when">${h != null ? (h < 48 ? `${Math.round(h)} ч назад` : `${Math.round(h / 24)} дн. назад`) : "—"}</span>
       <span class="what">${esc(o.title)}${S.view === "__all" ? ` <span class="muted small">· ${esc(o.ch.channel?.title || o.ch.slug)}</span>` : ""}${o.round ? ` <span class="muted small">· круг ${o.round}${o.edits ? `, правок ${o.edits}` : ""}</span>` : ""}</span>
-      <span class="st st-ready">${o.bot ? "открыть в Telegram ↗" : "ждёт «Ок»"}</span></div>`;
-  }).join("")}</div><div class="note">Ссылка открывает чат с ботом — превью там последним сообщением с видео. На отдельное сообщение в личном чате Telegram ссылку дать нельзя.</div>`;
+      <span class="st st-ready">${TG ? "открыть в «Согласованиях»" : o.bot ? "открыть в Telegram ↗" : "ждёт «Ок»"}</span></div>`;
+  }).join("")}</div><div class="note">Видео, обложки и шортсы на согласование — в мини-апе бота (кнопка «Приложение»), вкладка «Согласования».</div>`;
 }
 function leadStats(ch) {  // topic chosen -> published, review rounds
   const rows = [];
@@ -1250,7 +1257,9 @@ document.addEventListener("click", e => {
     openVideo(slug, vid.dataset.video); return;
   }
   const url = e.target.closest("[data-url]");
-  if (url) { window.open(url.dataset.url, "_blank", "noopener"); return; }
+  if (url) { url.dataset.url === "review/" ? (location.href = "review/") : openUrl(url.dataset.url); return; }
+  const ext = TG && e.target.closest('a[href^="http"]');
+  if (ext) { e.preventDefault(); openUrl(ext.href); return; }
   if (e.target.id === "dclose" || e.target.id === "drawer") closeDrawer();
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
@@ -1328,6 +1337,19 @@ function noData() {
   $("#lock").classList.remove("hidden");
   $("#lockform").innerHTML = `<div style="font-weight:650;font-size:17px">YouTube-пульт</div><div class="muted small">Сборщик ещё не записал данные. Как только GitHub Actions отработает (каждые 3 часа), здесь появится дашборд. Пока можно посмотреть <a href="?demo">демо</a>.</div>`;
 }
-function start() { $("#app").classList.remove("hidden"); renderShell(); }
+function start() {
+  $("#app").classList.remove("hidden");
+  if (TG) {
+    TG.ready(); TG.expand();
+    if (!store.get("ytdash.theme")) document.documentElement.dataset.theme = TG.colorScheme;
+    try {  // Telegram's header and the page share one colour
+      const hex = "#" + getComputedStyle(document.body).backgroundColor.match(/\d+/g).slice(0, 3).map(n => (+n).toString(16).padStart(2, "0")).join("");
+      TG.setHeaderColor(hex); TG.setBackgroundColor(hex);
+    } catch { /* old client */ }
+    TG.BackButton.show();
+    TG.BackButton.onClick(() => { location.href = "review/"; });
+  }
+  renderShell();
+}
 function whenChart(fn) { if (window.Chart) fn(); else window.addEventListener("load", fn, { once: true }); }
 whenChart(boot);

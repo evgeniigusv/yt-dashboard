@@ -244,7 +244,8 @@ function lazyBg(el, ch, file, keepKids) { if (file) media(ch, file, "image/jpeg"
 function topbar(app, waiting) {
   app.append(h("h1", {}, S.tab === "improve" ? "Улучшения" : "Согласования", h("small", {}, h("button", { onclick: () => boot(true), style: "color:var(--link)" }, "Обновить"))));
   app.append(h("div", { class: "tabs" }, [["review", "Согласования" + (waiting ? ` · ${waiting}` : "")], ["improve", "Улучшения"]].map(([k, name]) =>
-    h("button", { class: S.tab === k ? "on" : "", onclick: () => { S.tab = k; save("rv_tab", k); render(); window.scrollTo(0, 0); } }, name))));
+    h("button", { class: S.tab === k ? "on" : "", onclick: () => { S.tab = k; save("rv_tab", k); render(); window.scrollTo(0, 0); } }, name)),
+    h("button", { onclick: () => { location.href = "../"; } }, "Дашборд")));  // the full dashboard, same window; Telegram's back arrow returns here
 }
 function renderList() {
   const app = $("app"); app.textContent = "";

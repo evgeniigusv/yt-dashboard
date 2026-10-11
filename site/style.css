@@ -323,6 +323,8 @@ button.chip { cursor: pointer; }
   .fresh { order: 10; width: 100%; }
   .cal { display: none; }
   .calmobile-note { display: block !important; }
-  .arow { grid-template-columns: 1fr auto; }
-  .arow .when { grid-column: 1 / -1; }
+  .arow { grid-template-columns: minmax(0, 1fr); gap: 5px; }  /* phone: date, title (wrapped, not cut), status — one under another */
+  .arow .what { white-space: normal; }
+  .arow > :last-child { justify-self: start; }
+  .arow.child { margin-left: 12px; }
 }
