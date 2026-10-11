@@ -69,6 +69,18 @@ textarea { width: 100%; margin-top: 8px; padding: 9px; border-radius: 10px; bord
 .big { display: block; width: 100%; padding: 13px; border-radius: 12px; background: var(--accent); color: var(--on-accent); font-weight: 600; margin: 4px 0 10px; }
 .big.ghost { background: var(--card); color: var(--link); }
 .hint { color: var(--hint); font-size: 13px; padding: 2px 6px 8px; }
+.tabs { display: flex; background: var(--card); border-radius: 12px; padding: 3px; margin: 0 0 10px; }
+.tabs button { flex: 1; padding: 8px 6px; border-radius: 9px; color: var(--hint); font-weight: 600; font-size: 14px; }
+.tabs button.on { background: var(--accent); color: var(--on-accent); }
+details.card { padding: 0; } details.card > summary { list-style: none; padding: 11px 12px; cursor: pointer; }
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > .body { padding: 0 12px 12px; font-size: 14px; }
+.zt { font-weight: 600; line-height: 1.25; } .zv { color: var(--hint); font-size: 13px; margin: 3px 0 5px; }
+.body .sub { color: var(--hint); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 3px; }
+.body ul { margin: 0; padding-left: 18px; } .body li { margin: 3px 0; }
+.count { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 2px 8px; }
+.hrow { display: flex; gap: 8px; align-items: baseline; } .hrow .d { flex: none; color: var(--hint); font-size: 13px; width: 52px; }
+.pill.open { background: var(--bad); color: #fff; } .pill.testing, .pill.wait2 { background: var(--fix); color: #fff; } .pill.fixed { background: var(--ok); color: #fff; }
 .empty { text-align: center; color: var(--hint); padding: 46px 20px; }
 .back { color: var(--link); padding: 4px 4px 10px; display: none; }
 #send { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: 696px; margin: 0 auto; padding: 14px; border-radius: 12px; background: var(--accent); color: var(--on-accent); font-weight: 600; display: none; box-shadow: 0 6px 20px rgba(0, 0, 0, .25); }
@@ -87,7 +99,7 @@ input.code { width: 100%; padding: 11px; border-radius: 10px; border: 1px solid 
 const tg = window.Telegram && Telegram.WebApp;
 const inTg = !!(tg && tg.platform && tg.platform !== "unknown");
 const $ = (id) => document.getElementById(id);
-const S = { key: null, cfg: null, chans: [], filter: "all", view: null, draft: load("rv_draft"), sent: load("rv_sent"), blobs: {} };
+const S = { key: null, cfg: null, chans: [], filter: "all", tab: "review", imp: null, view: null, draft: load("rv_draft"), sent: load("rv_sent"), blobs: {} };
 const KIND = { video: "Видео", report: "Отчёт", ask: "Вопрос" };
 
 function load(k) { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch (e) { return {}; } }
@@ -136,7 +148,14 @@ async function loadChannel(ch) {
   if (r.status === 404) return;
   if (!r.ok) throw new Error("HTTP " + r.status);
   const idx = JSON.parse(new TextDecoder().decode(await dec(await r.arrayBuffer())));
-  ch.items = idx.items || []; ch.updated = idx.updated;
+  ch.items = idx.items || []; ch.updated = idx.updated; ch.improve = idx.improve || {};
+  for (const it of ch.items) {  // the card's short name in a text decision — tools/review.py code() computes the same
+    const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ch.slug}|${it.id}|${it.rev}`)));
+    it.code = [...hash.slice(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+}
+function improveOf(slug) {  // any channel's cards may carry the tab data of every channel: take the newest copy
+  return S.chans.map((c) => (c.improve || {})[slug]).filter(Boolean).sort((a, b) => b.at - a.at)[0];
 }
 async function media(ch, file, mime, onProgress) {
   if (S.blobs[file]) return S.blobs[file];
@@ -178,21 +197,35 @@ function refreshSend() {
   if (inTg) { n ? tg.MainButton.setParams({ text, is_visible: true, is_active: true }) : tg.MainButton.hide(); try { n ? tg.enableClosingConfirmation() : tg.disableClosingConfirmation(); } catch (e) {} }
   else { $("send").style.display = n ? "block" : "none"; $("send").textContent = text; }
 }
+function decisionText(list) {  // what he sends as a message when the app cannot send by itself (tools/review.py parse)
+  const mark = { ok: "✅", yes: "✅", fix: "✏️", seen: "👁", no: "❌" };
+  return "Решения из «Согласований»:\n" + list.map(({ ch, it, v }) =>
+    `${mark[v.a]} ${ch.name} · ${it.title.replace(/\s+/g, " ").slice(0, 70)} #r${it.code}` + (v.t ? "\n" + v.t : "")).join("\n");
+}
 function send() {
   const list = ready();
   if (!list.length) return;
+  const direct = inTg && !(tg.initDataUnsafe && tg.initDataUnsafe.query_id);  // opened from the reply-keyboard button: sendData works
   const payload = JSON.stringify({ v: 1, d: list.map(({ ch, it, v }) => ({ c: ch.slug, i: it.id, r: it.rev, a: v.a, ...(v.t ? { t: v.t } : {}) })) });
-  if (new TextEncoder().encode(payload).length > 4096) return toast("Слишком длинно для одной отправки: сократи правки или отправь часть карточек, потом остальные.", 5000);
+  const text = decisionText(list);
+  if (direct ? new TextEncoder().encode(payload).length > 4096 : text.length > 3500) return toast("Слишком длинно для одной отправки: сократи правки или отправь часть карточек, потом остальные.", 5000);
   const before = JSON.stringify(S.sent);
   for (const { ch, it, v } of list) { S.sent[uid(ch, it)] = { ...v, at: Math.floor(Date.now() / 1000) }; delete S.draft[uid(ch, it)]; }
   const keys = Object.keys(S.sent); for (const k of keys.slice(0, Math.max(0, keys.length - 60))) delete S.sent[k];
   save("rv_sent", S.sent); save("rv_draft", S.draft);
-  if (!inTg) { console.log("sendData", payload); window.__lastPayload = payload; toast("Вне Telegram отправка не работает — решение показано в консоли.", 4000); refreshSend(); return render(); }
+  if (!inTg) { console.log("decision", direct ? payload : text); window.__lastPayload = payload; window.__lastText = text; toast("Вне Telegram отправка не работает — решение показано в консоли.", 4000); refreshSend(); return render(); }
   haptic("medium");
   try { tg.disableClosingConfirmation(); } catch (e) {}
-  tg.sendData(payload);  // Telegram closes the mini app here; still being open means the message did not go
-  setTimeout(() => { S.sent = JSON.parse(before); save("rv_sent", S.sent); refreshSend(); render();
-    tg.showAlert ? tg.showAlert("Не отправилось. Открой мини-ап кнопкой «📋 Согласования» под полем ввода в чате с ботом — только оттуда решения доходят.") : toast("Не отправилось"); }, 2500);
+  if (direct) {
+    tg.sendData(payload);  // Telegram closes the mini app here; still being open means the message did not go
+    return setTimeout(() => { S.sent = JSON.parse(before); save("rv_sent", S.sent); refreshSend(); render(); tg.showAlert ? tg.showAlert("Не отправилось — попробуй ещё раз.") : toast("Не отправилось"); }, 2500);
+  }
+  // Opened from the menu or an «Открыть» button: Telegram gives such an app no way to send. Put the ready message
+  // into the chat's input field — he presses send there.
+  try { navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}); } catch (e) {}
+  tg.openTelegramLink(`https://t.me/${S.cfg.bot}?text=${encodeURIComponent(text)}`);
+  refreshSend(); render();
+  setTimeout(() => { try { tg.close(); } catch (e) {} }, 600);
 }
 
 /* ---------- views ---------- */
@@ -208,10 +241,15 @@ function statusPill(ch, it) {
 function posterOf(it) { const p = (it.parts || []).find((x) => x.poster) || {}; return p.poster || (((it.parts || []).find((x) => x.files) || {}).files || [{}])[0].file; }
 function lazyBg(el, ch, file, keepKids) { if (file) media(ch, file, "image/jpeg").then((u) => { el.style.backgroundImage = `url(${u})`; if (!keepKids) el.textContent = ""; }).catch(() => {}); }
 
+function topbar(app, waiting) {
+  app.append(h("h1", {}, S.tab === "improve" ? "Улучшения" : "Согласования", h("small", {}, h("button", { onclick: () => boot(true), style: "color:var(--link)" }, "Обновить"))));
+  app.append(h("div", { class: "tabs" }, [["review", "Согласования" + (waiting ? ` · ${waiting}` : "")], ["improve", "Улучшения"]].map(([k, name]) =>
+    h("button", { class: S.tab === k ? "on" : "", onclick: () => { S.tab = k; save("rv_tab", k); render(); window.scrollTo(0, 0); } }, name))));
+}
 function renderList() {
   const app = $("app"); app.textContent = "";
   const total = S.chans.reduce((n, ch) => n + ch.items.filter((it) => open(ch, it)).length, 0);
-  app.append(h("h1", {}, "Согласования", h("small", {}, h("button", { onclick: () => boot(true), style: "color:var(--link)" }, "Обновить"))));
+  topbar(app, total);
   app.append(h("div", { class: "chips" }, [{ slug: "all", name: "Все" }, ...S.chans].map((c) =>
     h("button", { class: "chip" + (S.filter === c.slug ? " on" : ""), onclick: () => { S.filter = c.slug; renderList(); } },
       c.name + (c.slug !== "all" ? (() => { const n = c.items.filter((it) => open(c, it)).length; return n ? ` · ${n}` : ""; })() : total ? ` · ${total}` : "")))));
@@ -317,11 +355,52 @@ function renderItem() {
   if (it.note) app.append(h("div", { class: "block" }, h("div", { class: "lab" }, h("b", {}, "Заметка")), h("div", { class: "text" }, it.note)));
   if (!can && S.sent[k] && ["waiting", "new", "open"].includes(it.status) && !it.decision)
     app.append(h("button", { class: "big ghost", onclick: () => { delete S.sent[k]; save("rv_sent", S.sent); renderItem(); refreshSend(); } }, "Изменить решение"),
-      h("div", { class: "hint" }, `Отправлено ${when(S.sent[k].at)}. Бот забирает решения раз в несколько часов; пока не забрал — можно отправить другое, считается последнее.`));
+      h("div", { class: "hint" }, `Отмечено ${when(S.sent[k].at)}. Если сообщение с решением в чате не отправил — нажми «Изменить решение» и отправь заново. Бот забирает решения раз в несколько часов; считается последнее.`));
+}
+function renderImprove() {
+  const app = $("app"); app.textContent = "";
+  topbar(app, S.chans.reduce((n, ch) => n + ch.items.filter((it) => open(ch, it)).length, 0));
+  if (!S.chans.some((c) => c.slug === S.imp)) S.imp = (S.chans[0] || {}).slug;
+  app.append(h("div", { class: "chips" }, S.chans.map((c) => h("button", { class: "chip" + (S.imp === c.slug ? " on" : ""), onclick: () => { S.imp = c.slug; save("rv_imp", c.slug); renderImprove(); } }, c.name))));
+  const d = improveOf(S.imp);
+  if (!d) return app.append(h("div", { class: "empty" }, "Данных пока нет — появятся после ближайшего ежедневного разбора (12:00 по Екатеринбургу)."));
+  const j = d.judged || {};
+  app.append(h("div", { class: "hint", style: "padding-top:8px" }, `По данным дашборда на ${when(Date.parse(d.generated_at) / 1000)} · в оценке ${j.videos || 0} видео и ${j.shorts || 0} шортсов (у остальных ещё мало показов)`));
+
+  const ST = { open: ["Не исправлено", "open"], testing: ["Изменено · ждём статистику", "testing"], fixed: ["Исправлено", "fixed"], nodata: ["Мало данных", ""], ok: ["В норме", ""] };
+  const zones = d.zones || [], n = (s) => zones.filter((z) => z.status === s).length;
+  app.append(h("h2", {}, "Точки роста"));
+  app.append(h("div", { class: "count" }, h("span", { class: "pill open" }, `не исправлено · ${n("open")}`), h("span", { class: "pill testing" }, `ждём статистику · ${n("testing")}`), h("span", { class: "pill fixed" }, `исправлено · ${n("fixed")}`)));
+  const list = (title, rows) => rows && rows.length ? [h("div", { class: "sub" }, title), h("ul", {}, rows.map((r) => h("li", {}, r)))] : [];
+  const change = (c) => [c.id ? h("b", {}, c.id + " ") : null, c.text, h("div", { class: "meta" }, c.state)];
+  for (const st of ["open", "testing", "fixed", "nodata"]) for (const z of zones.filter((x) => x.status === st)) {
+    app.append(h("details", { class: "card" }, h("summary", {}, h("div", { class: "zt" }, z.title),
+        h("div", { class: "zv" }, z.value === "—" ? `норма ${z.norm}` : `сейчас ${z.value} · норма ${z.norm}`), h("span", { class: "pill " + ST[st][1] }, ST[st][0])),
+      h("div", { class: "body" }, h("div", {}, z.detail), list("Что уже изменили", (z.changes || []).map(change)), list("Пробовали раньше", (z.tried || []).map(change)),
+        list("Где проседает", z.weak), list("Вероятные причины", z.causes), list("Что делать", z.steps))));
+  }
+  const fine = zones.filter((z) => z.status === "ok");
+  if (fine.length) app.append(h("div", { class: "hint" }, "В норме: " + fine.map((z) => `${z.title} (${z.value})`).join(" · ")));
+
+  if ((d.quick || []).length) {
+    app.append(h("h2", {}, "Можно сделать сразу"));
+    for (const q of d.quick) app.append(h("details", { class: "card" }, h("summary", {}, h("div", { class: "zt" }, q.title), h("div", { class: "zv" }, q.why), h("span", { class: "pill open" }, q.needs_yes ? "Не сделано · нужно твоё «да»" : "Не сделано")),
+      h("div", { class: "body" }, h("div", {}, q.action), q.note ? h("div", { class: "meta" }, q.note) : null)));
+  }
+
+  app.append(h("h2", {}, "История изменений"));
+  const TONE = { wait: "testing", ok: "fixed", bad: "open" };
+  if (!(d.history || []).length) app.append(h("div", { class: "hint" }, "Пока ничего не меняли."));
+  for (const x of d.history || []) {
+    const day = x.date ? new Date(x.date + "T12:00:00").toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) : "";
+    app.append(h("details", { class: "card" }, h("summary", {}, h("div", { class: "hrow" }, h("span", { class: "d" }, day), h("div", {}, h("div", {}, x.id ? h("b", {}, x.id + " ") : null, x.text), h("div", { style: "margin-top:5px" }, h("span", { class: "pill " + (TONE[x.tone] || "") }, x.label))))),
+      h("div", { class: "body" }, x.note ? h("div", {}, x.note) : null, list("Зачем", x.why ? [x.why] : []), list("По чему судим", x.metric ? [x.metric] : []), list("Первые цифры", x.evidence))));
+  }
+  if ((d.planned || []).length) { app.append(h("h2", {}, "В плане")); for (const x of d.planned) app.append(h("div", { class: "block" }, x.id ? h("b", {}, x.id + " ") : null, x.text, h("div", { class: "meta" }, x.state))); }
 }
 function back() { S.view = null; render(); }
 function render() {
-  S.view ? renderItem() : renderList();
+  S.view ? renderItem() : S.tab === "improve" ? renderImprove() : renderList();
   if (inTg) { try { S.view ? tg.BackButton.show() : tg.BackButton.hide(); } catch (e) {} }
   refreshSend();
 }
@@ -339,7 +418,7 @@ async function boot(manual) {
   if (typeof key !== "string") return askKey("Открой мини-ап кнопкой «📋 Согласования» в чате с ботом — в ней уже есть код доступа. Или вставь код сюда.");
   save("rv_key", key);
   await setKey(key);
-  if (!S.chans.length) S.chans = S.cfg.channels.map((c) => ({ ...c, items: [] }));
+  if (!S.chans.length) { S.chans = S.cfg.channels.map((c) => ({ ...c, items: [] })); const t = load("rv_tab"), i = load("rv_imp"); if (t === "improve") S.tab = t; if (typeof i === "string") S.imp = i; }
   if (!manual) $("app").innerHTML = '<div class="empty">Загружаю…</div>';
   await Promise.all(S.chans.map((ch) => loadChannel(ch).catch((e) => { ch.error = e.message; })));
   if (S.chans.some((c) => c.error === "key")) { window.__k = null; save("rv_key", null); return askKey("Код доступа не подошёл. Открой мини-ап кнопкой из последнего сообщения бота или вставь новый код."); }

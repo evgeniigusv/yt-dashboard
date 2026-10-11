@@ -2,7 +2,16 @@
   "repo": "evgeniigusv/yt-dashboard",
   "note": "Mini app «Согласования»: one line per channel; its cards are read from branch review-<slug> of this repo (collector/review_sync.py copies them there).",
   "channels": [
-    {"slug": "chalkonaut", "name": "Chalkonaut", "color": "#E8743B"},
-    {"slug": "nine-lives-ago", "name": "9 Lives Ago", "color": "#C8A24A"}
-  ]
+    {
+      "slug": "chalkonaut",
+      "name": "Chalkonaut",
+      "color": "#E8743B"
+    },
+    {
+      "slug": "nine-lives-ago",
+      "name": "9 Lives Ago",
+      "color": "#C8A24A"
+    }
+  ],
+  "bot": "you_sho_reddit_bot"
 }
