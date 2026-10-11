@@ -1,8 +1,13 @@
 name: ticker
 
-# GitHub runs `schedule` triggers only a few times a day on this repo (2026-10-05: hourly cron -> 1 run in 6 h),
-# so this job starts `collect` every hour itself and then re-dispatches itself (workflow_dispatch from GITHUB_TOKEN
-# does start new runs). The cron below only restarts the chain if it ever breaks.
+# The dashboard's clock. GitHub runs `schedule` triggers only a few times a day on this repo (2026-10-05: hourly cron
+# -> 1 run in 6 h), so one long job does the timing itself (collector/watch.py):
+#   every minute   — did a channel's pipeline repo change (publish log, topic list, state, video branch)? If yes, or
+#                    every 10 minutes anyway (changes made in YouTube Studio), refresh the schedule: `collect.py --fast`
+#                    and push branch `data` — the page shows a schedule change within a minute or two;
+#   every hour     — start the full `collect` workflow (analytics, reach, history, Pages deploy).
+# After ~5.5 h the job hands over to a fresh run (workflow_dispatch from GITHUB_TOKEN does start new runs);
+# the cron below only restarts the chain if it ever breaks.
 on:
   workflow_dispatch:
   schedule:
@@ -10,6 +15,7 @@ on:
 
 permissions:
   actions: write
+  contents: write
 
 concurrency:
   group: ticker
@@ -18,16 +24,37 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 345
     steps:
-      - name: Start collect every hour (5 times), then hand over to a fresh ticker
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: collector/requirements.txt
+
+      - run: pip install -q -r collector/requirements.txt
+
+      - name: Watch the pipeline repos and keep the schedule fresh for ~5.5 hours
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          YT_TOKENS: ${{ secrets.YT_TOKENS }}
+          DASH_PASSWORD: ${{ secrets.DASH_PASSWORD }}
+          DEPLOY_KEY_CHALKONAUT: ${{ secrets.DEPLOY_KEY_CHALKONAUT }}
+          DEPLOY_KEY_NINE_LIVES_AGO: ${{ secrets.DEPLOY_KEY_NINE_LIVES_AGO }}
+        run: |
+          date +%s > "$RUNNER_TEMP/started"
+          python collector/watch.py --minutes 325 --every 60 --fast-every 600 --full-every 3600
+
+      - name: Hand over to a fresh run (not after a quick crash — the cron restarts the chain then)
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          for i in 1 2 3 4 5; do
-            gh workflow run collect -R "$REPO" && echo "collect #$i started $(date -u +%H:%M)"
-            [ "$i" -lt 5 ] && sleep 3540
-          done
-          sleep 3300
-          gh workflow run ticker -R "$REPO"
+          if [ $(( $(date +%s) - $(cat "$RUNNER_TEMP/started" 2>/dev/null || date +%s) )) -gt 900 ]; then
+            gh workflow run ticker -R "$REPO"
+          fi

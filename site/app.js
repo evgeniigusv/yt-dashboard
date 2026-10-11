@@ -27,7 +27,29 @@ async function decrypt(text, pw) {
   return JSON.parse(await new Response(stream).text());
 }
 
-async function fetchText(path) {
+// Data lives on branch `data` of the dashboard repo. The schedule is refreshed there within a minute of a change
+// (collector/watch.py), but a branch URL is cached by GitHub for 5 minutes — so ask the API for the branch's commit id
+// (the browser revalidates with ETag) and read the files by that id: immutable, never stale. Fallbacks: the copy
+// deployed with the page (hourly), so the dashboard works even when the API is rate-limited or blocked.
+const GH = { repo: "evgeniigusv/yt-dashboard", branch: "data", sha: null, pause: 0 };
+async function latestSha() {
+  if (DEMO || !/github\.io$|^localhost$/.test(location.hostname)) return null;
+  if (Date.now() < GH.pause) return GH.sha;
+  try {
+    const r = await fetch(`https://api.github.com/repos/${GH.repo}/git/ref/heads/${GH.branch}`, { cache: "no-cache" });
+    const left = Number(r.headers.get("x-ratelimit-remaining"));
+    if (!r.ok || (isFinite(left) && left < 8)) GH.pause = Date.now() + 10 * 60e3;  // unauthenticated limit: 60 per hour per IP
+    if (r.ok) GH.sha = (await r.json()).object.sha;
+  } catch { GH.pause = Date.now() + 2 * 60e3; }
+  return GH.sha;
+}
+async function fetchText(path, sha = null) {
+  if (sha) {
+    try {
+      const r = await fetch(`https://raw.githubusercontent.com/${GH.repo}/${sha}/${path}`);
+      if (r.ok) return r.text();
+    } catch { /* fall through to the deployed copy */ }
+  }
   const r = await fetch(BASE + path + "?t=" + Date.now(), { cache: "no-store" });
   if (!r.ok) throw new Error(r.status);
   return r.text();
@@ -1252,14 +1274,15 @@ function paintFresh() {
   const old = Date.now() - new Date(S.freshAt) > 2.5 * 36e5;
   el.textContent = `${S.refreshing ? "обновляю…" : "данные " + ago(S.freshAt)} · Analytics ${S.lastA ? "по " + fmtDate(S.lastA + "T12:00:00", false) : "ещё без данных"}`;
   el.classList.toggle("stale", old);
-  el.title = "Нажмите, чтобы проверить свежие данные. Сбор — каждый час; живые счётчики сразу, YouTube Analytics — с задержкой 2–3 дня.";
+  el.title = "Нажмите, чтобы проверить свежие данные. Расписание и счётчики обновляются в течение пары минут после изменения и каждые 10 минут; полный сбор — раз в час; YouTube Analytics — с задержкой 2–3 дня.";
 }
 async function refreshData(force = false) {
   if (S.refreshing || !S.pw || (document.hidden && !force)) return;
   S.refreshing = true; paintFresh();
   try {
-    const idx = await decrypt(await fetchText("index.enc"), S.pw);
-    if (force || idx.generated_at !== S.index?.generated_at) {
+    const sha = await latestSha();
+    const changed = sha ? sha !== S.dataSha : (await decrypt(await fetchText("index.enc"), S.pw)).generated_at !== S.index?.generated_at;
+    if (force || changed) {
       await unlock(S.pw);
       if (!$("#drawer").classList.contains("hidden")) S.pendingRender = true;
       else { const y = window.scrollY; renderShell(); window.scrollTo(0, y); }
@@ -1267,16 +1290,17 @@ async function refreshData(force = false) {
   } catch { /* offline or mid-deploy: try again next tick */ }
   S.refreshing = false; paintFresh();
 }
-setInterval(() => refreshData(), 10 * 60e3);
+setInterval(() => refreshData(), 60e3);  // a schedule change reaches branch `data` within a minute or two
 setInterval(paintFresh, 60e3);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshData(); });
 document.addEventListener("click", e => { if (e.target.closest("#fresh")) refreshData(true); });
 
 async function unlock(pw) {
   S.pw = pw;
-  const index = await decrypt(await fetchText("index.enc"), pw);
-  S.index = index;
-  const results = await Promise.allSettled(index.channels.map(async c => [c.slug, await decrypt(await fetchText(c.slug + ".enc"), pw)]));
+  const sha = await latestSha();
+  const index = await decrypt(await fetchText("index.enc", sha), pw);
+  S.index = index; S.dataSha = sha;
+  const results = await Promise.allSettled(index.channels.map(async c => [c.slug, await decrypt(await fetchText(c.slug + ".enc", sha), pw)]));
   for (const r of results) if (r.status === "fulfilled") S.ch[r.value[0]] = r.value[1];
 }
 async function boot() {

@@ -34,6 +34,7 @@ REACH_REPORTS = ("channel_reach_basic_a1", "channel_reach_combined_a1")
 CORE = "views,engagedViews,estimatedMinutesWatched,averageViewDuration,subscribersGained,subscribersLost,likes,comments,shares"
 VIDEO = CORE + ",averageViewPercentage"
 REVENUE = "estimatedRevenue,estimatedAdRevenue,grossRevenue,cpm,playbackBasedCpm,adImpressions,monetizedPlaybacks"
+FAST = "--fast" in sys.argv  # schedule-only refresh between the hourly full runs (collector/watch.py)
 TODAY = dt.datetime.now(dt.timezone.utc).date()
 NOW = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
 
@@ -89,16 +90,8 @@ class Channel:
     def run(self):
         out = {"v": 1, "slug": self.cfg["slug"], "name": self.cfg["name"], "channel_id": self.cfg["channel_id"],
                "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "demo": False}
-        ch = self.get(f"{DATA_API}/channels", part="snippet,statistics,contentDetails,status", mine="true")["items"][0]
-        if ch["id"] != self.cfg["channel_id"]:
-            self.errors.append(f"token belongs to {ch['id']}, config says {self.cfg['channel_id']}")
-        st = ch["statistics"]
-        out["channel"] = {
-            "id": ch["id"], "title": ch["snippet"]["title"], "handle": ch["snippet"].get("customUrl"),
-            "thumbnail": ch["snippet"]["thumbnails"].get("default", {}).get("url"),
-            "published_at": ch["snippet"]["publishedAt"], "subscribers": int(st.get("subscriberCount", 0)),
-            "views": int(st.get("viewCount", 0)), "video_count": int(st.get("videoCount", 0))}
-        self.empty = out["channel"]["views"] == 0
+        out["full_at"] = out["generated_at"]
+        out["channel"], uploads = self.channel_info()
         hist = dict(self.prev.get("subs_history", []))
         hist[iso(TODAY)] = out["channel"]["subscribers"]
         out["subs_history"] = sorted(hist.items())[-800:]
@@ -109,7 +102,7 @@ class Channel:
         heavy = self.prev.get("daily_refresh") != iso(TODAY)  # per-video deep data once a day
         out["daily_refresh"] = iso(TODAY) if heavy else self.prev.get("daily_refresh")
 
-        videos = self.videos(ch["contentDetails"]["relatedPlaylists"]["uploads"])
+        videos = self.videos(uploads)
         out["daily"] = self.daily(start)
         self.video_analytics(videos, start)
         if heavy:
@@ -122,19 +115,11 @@ class Channel:
         out["audience"] = self.audience() if heavy or "audience" not in self.prev else self.prev["audience"]
         out["ypp"] = self.ypp(out["channel"]["subscribers"], videos)
         out["reach_state"] = self.reach(videos)
-        self.costs = self.pstate = None
-        out["calendar"] = self.safe("calendar", self.calendar, self.prev.get("calendar"))
-        out["costs"] = self.costs or self.prev.get("costs")
-        out["pipeline_state"] = self.pstate or self.prev.get("pipeline_state")
-        out["errors"] = self.errors  # the advisor reports collector trouble as a risk
-        docs = self.safe("pipeline docs", self.pipeline_docs, None)
-        out["advice"] = (self.safe("advisor", lambda: advisor.build(out, docs), None) if docs is not None else None) \
-            or self.prev.get("advice")
-        out["telegram_bot"] = (self.cfg.get("calendar") or {}).get("telegram_bot")
+        self.apply_pipeline(out)
         out["errors"] = self.errors
         return out
 
-    def videos(self, uploads):
+    def videos(self, uploads, snapshot=True):
         ids, token = [], None
         while len(ids) < 1000:
             d = self.get(f"{DATA_API}/playlistItems", part="contentDetails", playlistId=uploads, maxResults=50,
@@ -158,7 +143,7 @@ class Channel:
                     "tags": sn.get("tags", [])[:15], "live": sn.get("liveBroadcastContent"),
                     "stats": {k: int(s[k]) for k in ("viewCount", "likeCount", "commentCount") if k in s},
                     # live counter snapshots (one per run, ~30 days): Analytics lags 2–3 days, counters don't
-                    "vh": ((p.get("vh") or []) + ([[NOW, int(s["viewCount"])]] if "viewCount" in s else []))[-800:],
+                    "vh": ((p.get("vh") or []) + ([[NOW, int(s["viewCount"])]] if snapshot and "viewCount" in s else []))[-800:],
                     "format": p.get("format") or ("short" if dur <= 180 else "long")}
         return vids
 
@@ -304,65 +289,111 @@ class Channel:
                 cur = per.get(date, [0, 0])
                 per[date] = [cur[0] + impr, round(cur[1] + clicks, 2)]
 
-    def pipeline_docs(self):
-        """What the channel's pipeline repo says was already changed (main branch, read without a checkout):
-        experiments, Short-cover / pinned-comment ledgers, handled advice, the analyst's last decisions."""
+    def pipeline(self):
+        """One partial clone of the channel's pipeline repo (read-only deploy key). The release calendar is BUILT FROM
+        THE SOURCES by the repo's own tools/release_calendar.py (publish logs, topic list, video folders and branches,
+        state) — a stored calendar.json goes stale whenever nobody re-runs that tool (2026-10-04…10: six days). Also
+        returns costs.json / state.json (branch claude/state) and the docs the advisor reads (branch main)."""
         cal = self.cfg.get("calendar")
         key = os.environ.get(cal.get("deploy_key_env", "")) if cal else None
         if not cal or not key:
-            return {}
+            return None
         with tempfile.TemporaryDirectory() as tmp:
             kf = Path(tmp) / "key"
             kf.write_text(key.strip() + "\n")
             kf.chmod(0o600)
-            env = {**os.environ, "GIT_SSH_COMMAND": f"ssh -i {kf} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"}
-            dst = Path(tmp) / "main"
-            r = subprocess.run(["git", "clone", "-q", "--depth", "1", "--filter=blob:none", "--no-checkout", "-b",
-                                cal.get("docs_branch", "main"), f"git@github.com:{cal['repo']}.git", str(dst)],
-                               env=env, capture_output=True, text=True)
-            if r.returncode:
-                raise RuntimeError(f"pipeline docs: clone failed: {r.stderr.strip()[-200:]}")
+            ssh = f"ssh -i {kf} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+            env = {**os.environ, "GIT_SSH_COMMAND": ssh, "GIT_TERMINAL_PROMPT": "0"}
+            repo, url = Path(tmp) / "repo", f"git@github.com:{cal['repo']}.git"
 
-            def show(path):
-                x = subprocess.run(["git", "show", f"HEAD:{path}"], cwd=dst, env=env, capture_output=True, text=True)
-                return x.stdout if x.returncode == 0 else None
+            def git(*a, cwd=repo, check=True):
+                r = subprocess.run(["git", *a], cwd=cwd, env=env, capture_output=True, text=True)
+                if check and r.returncode:
+                    raise RuntimeError(f"pipeline repo: git {a[0]} failed: {r.stderr.strip()[-200:]}")
+                return r
 
-            def js(path):
-                t = show(path)
+            # text files only: blobs over 64 KB (thumbnails, music) are not downloaded, and only these paths are checked out
+            git("clone", "-q", "--depth", "1", "--filter=blob:limit=64k", "--no-checkout", "-b", "main", url, str(repo), cwd=tmp)
+            git("sparse-checkout", "set", "--no-cone", "/tools/", "/channel.md", "/docs/*.md", "/docs/*.json",
+                "/videos/*/script.md", "/videos/*/metadata.json", "/videos/*/publish_log.md", "/videos/*/qc.md",
+                "/videos/*/shorts/plan.json")
+            git("checkout", "-q", "main")
+            git("fetch", "-q", "--depth", "1", "--filter=blob:limit=64k", "origin",
+                "+refs/heads/claude/*:refs/remotes/origin/claude/*", check=False)
+
+            def show(ref, path):
+                r = git("show", f"{ref}:{path}", check=False)
+                return r.stdout if r.returncode == 0 else None
+
+            def js(text):
                 try:
-                    return json.loads(t) if t else None
+                    return json.loads(text) if text else None
                 except ValueError:
                     return None
-            return {"improvements_md": show("docs/IMPROVEMENTS.md"), "covers": js("docs/short_covers.json"),
-                    "pins": js("docs/pinned_comments.json"), "handled": js("docs/advice_handled.json"),
-                    "decisions": js("docs/decisions_latest.json")}
 
-    def calendar(self):
-        cal = self.cfg.get("calendar")
-        key = os.environ.get(cal.get("deploy_key_env", "")) if cal else None
-        if not cal or not key:
-            return self.prev.get("calendar")
-        with tempfile.TemporaryDirectory() as tmp:
-            kf = Path(tmp) / "key"
-            kf.write_text(key.strip() + "\n")
-            kf.chmod(0o600)
-            env = {**os.environ, "GIT_SSH_COMMAND": f"ssh -i {kf} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"}
-            for branch in cal.get("branches", ["main"]):
-                dst = Path(tmp) / re.sub(r"\W", "_", branch)
-                r = subprocess.run(["git", "clone", "-q", "--depth", "1", "-b", branch, f"git@github.com:{cal['repo']}.git",
-                                    str(dst)], env=env, capture_output=True, text=True)
-                f = dst / cal.get("path", "calendar.json")
-                if r.returncode == 0 and f.exists():
-                    data = json.loads(f.read_text())
-                    data["source"] = f"{cal['repo']}@{branch}"
-                    costs = dst / cal.get("costs_path", "costs.json")  # production costs (pipeline tools/costs.py)
-                    if costs.exists():
-                        self.costs = json.loads(costs.read_text()) | {"source": f"{cal['repo']}@{branch}"}
-                    state = dst / "state.json"  # cloud pipeline state (what waits for approval right now)
-                    if state.exists():
-                        self.pstate = json.loads(state.read_text())
-                    return data
-        raise RuntimeError(f"calendar.json not found in {cal['repo']} {cal.get('branches')}")
+            def doc(name):
+                f = repo / "docs" / name
+                return f.read_text() if f.exists() else None
+
+            # the repo's own code runs without the dashboard's secrets in its environment
+            child = {k: v for k, v in env.items() if k in ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "GIT_SSH_COMMAND", "GIT_TERMINAL_PROMPT")}
+            calendar, why = None, ""
+            try:
+                r = subprocess.run([sys.executable, "release_calendar.py"], cwd=repo / "tools", env=child,
+                                   capture_output=True, text=True, timeout=300)
+                if r.returncode == 0 and (repo / "calendar.json").exists():
+                    calendar = json.loads((repo / "calendar.json").read_text())
+                    calendar["source"] = f"{cal['repo']}: собран из исходников конвейера"
+                else:
+                    why = (r.stderr or r.stdout).strip()[-200:]
+            except Exception as e:
+                why = str(e)[:200]
+            if calendar is None:  # fall back to the stored copy, and say so
+                calendar = js(show("origin/claude/state", cal.get("path", "calendar.json")))
+                if calendar:
+                    calendar["source"] = f"{cal['repo']}@claude/state: сохранённая копия (сборка не удалась)"
+                self.errors.append(f"calendar: build from sources failed, stored copy used: {why}"[:300])
+            return {"calendar": calendar, "costs": js(show("origin/claude/state", cal.get("costs_path", "costs.json"))),
+                    "state": js(show("origin/claude/state", "state.json")),
+                    "docs": {"improvements_md": doc("IMPROVEMENTS.md"), "covers": js(doc("short_covers.json")),
+                             "pins": js(doc("pinned_comments.json")), "handled": js(doc("advice_handled.json")),
+                             "decisions": js(doc("decisions_latest.json"))}}
+
+    def apply_pipeline(self, out):
+        """Calendar, costs, pipeline state and the advisor's findings — everything that depends on the pipeline repo."""
+        p = self.safe("pipeline", self.pipeline, None)
+        for key, src in (("calendar", "calendar"), ("costs", "costs"), ("pipeline_state", "state")):
+            val = (p or {}).get(src)
+            if val and key == "costs":
+                val = val | {"source": (self.cfg.get("calendar") or {}).get("repo")}
+            out[key] = val or self.prev.get(key)
+        out["errors"] = self.errors  # the advisor reports collector trouble as a risk
+        out["advice"] = (self.safe("advisor", lambda: advisor.build(out, p["docs"]), None) if p else None) or self.prev.get("advice")
+        out["telegram_bot"] = (self.cfg.get("calendar") or {}).get("telegram_bot")
+
+    def channel_info(self):
+        ch = self.get(f"{DATA_API}/channels", part="snippet,statistics,contentDetails,status", mine="true")["items"][0]
+        if ch["id"] != self.cfg["channel_id"]:
+            self.errors.append(f"token belongs to {ch['id']}, config says {self.cfg['channel_id']}")
+        st = ch["statistics"]
+        info = {"id": ch["id"], "title": ch["snippet"]["title"], "handle": ch["snippet"].get("customUrl"),
+                "thumbnail": ch["snippet"]["thumbnails"].get("default", {}).get("url"),
+                "published_at": ch["snippet"]["publishedAt"], "subscribers": int(st.get("subscriberCount", 0)),
+                "views": int(st.get("viewCount", 0)), "video_count": int(st.get("videoCount", 0))}
+        self.empty = info["views"] == 0
+        return info, ch["contentDetails"]["relatedPlaylists"]["uploads"]
+
+    def run_fast(self):
+        """Schedule-only refresh (seconds, ~3 API units): what is published / scheduled on YouTube right now + the
+        calendar rebuilt from the pipeline repo + advice. Analytics, reach and history stay as the last full run left them."""
+        out = dict(self.prev)
+        out["full_at"] = self.prev.get("full_at") or self.prev.get("generated_at")
+        out["generated_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        out["channel"], uploads = self.channel_info()
+        out["videos"] = self.videos(uploads, snapshot=False)
+        self.apply_pipeline(out)
+        out["errors"] = self.errors + [e for e in self.prev.get("errors", []) if e not in self.errors and not e.startswith("calendar:")]
+        return out
 
 
 def main():
@@ -389,8 +420,11 @@ def main():
             if prev:
                 index.append({k: c[k] for k in ("slug", "name", "channel_id")} | {"status": "stale"})
             continue
+        if FAST and not prev:
+            print(f"{c['slug']}: fast run needs a previous full run — skipped")
+            continue
         try:
-            data = Channel(c, token, prev).run()
+            data = Channel(c, token, prev).run_fast() if FAST else Channel(c, token, prev).run()
             f.write_text(encrypt(data, password))
             index.append({k: c[k] for k in ("slug", "name", "channel_id")} | {"status": "ok", "errors": len(data["errors"])})
             print(f"{c['slug']}: ok, {len(data['videos'])} videos, {len(data['errors'])} errors")
